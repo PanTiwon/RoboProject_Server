@@ -69,7 +69,7 @@ flowchart LR
     Teleop -->|/robot/mode, /audio/mute| AudioNode
     Teleop -->|/telemetry| TelemetryNode
     
-    UPS -->|I2C (0x2d)| TelemetryNode
+    UPS["UPS HAT"] -->|"I2C (0x2d)"| TelemetryNode
     TelemetryNode -->|/battery_percent| Teleop
 
     SerialNode -->|Serial <M1,M2,M3,M4,Sw>| ESP32
