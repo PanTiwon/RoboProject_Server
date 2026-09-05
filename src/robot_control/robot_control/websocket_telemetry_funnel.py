@@ -3,7 +3,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Int32MultiArray
+from std_msgs.msg import Int32MultiArray, Int32
 import asyncio
 import websockets
 import json
@@ -13,6 +13,7 @@ import time
 import os
 import functools
 import http
+import smbus
 
 class TelemetryNode(Node):
     # ... (ส่วนคลาส TelemetryNode เหมือนเดิมทุกประการ) ...
@@ -23,6 +24,8 @@ class TelemetryNode(Node):
             Joy, 'joy', self.joy_callback, 10)
         self.subscription_wheels = self.create_subscription(
             Int32MultiArray, 'wheel_speeds', self.wheels_callback, 10)
+            
+        self.bat_pub = self.create_publisher(Int32, 'battery_percent', 10)
         
         self.declare_parameter('axis_forward', 5)
         self.declare_parameter('axis_backward', 2)
@@ -44,6 +47,43 @@ class TelemetryNode(Node):
         self.sweeper_status = "Offline"
         self.robot_mode = "MANUAL"
         self.last_joy_time = 0.0
+        
+        # Battery setup
+        self.bat_percent = 0
+        self.last_bat_percent = -1
+        try:
+            self.i2c_bus = smbus.SMBus(1)
+            self.i2c_addr = 0x2d
+            self.create_timer(5.0, self.check_battery) # Check every 5 seconds
+        except Exception as e:
+            self.get_logger().error(f"Failed to init SMBus for battery: {e}")
+
+    def check_battery(self):
+        try:
+            # Read percentage
+            data_pct = self.i2c_bus.read_i2c_block_data(self.i2c_addr, 0x20, 0x0C)
+            percent = int(data_pct[4] | data_pct[5] << 8)
+            self.bat_percent = percent
+            
+            # Read voltage and current
+            voltage = data_pct[0] | data_pct[1] << 8
+            current = data_pct[2] | data_pct[3] << 8
+            if current > 0x7FFF:
+                current -= 0xFFFF
+                
+            capacity = data_pct[6] | data_pct[7] << 8
+            
+            if percent != self.last_bat_percent:
+                self.get_logger().info(f"🔋 UPS Battery Update: {percent}% | {voltage}mV | {current}mA | {capacity}mAh remaining")
+                self.last_bat_percent = percent
+                
+            bat_msg = Int32()
+            bat_msg.data = percent
+            self.bat_pub.publish(bat_msg)
+                
+        except Exception as e:
+            # Silently ignore read errors to prevent log spam if I2C fails temporarily
+            pass
 
     def map_trigger(self, val):
         return (1.0 - val) / 2.0
@@ -126,7 +166,8 @@ async def broadcast_telemetry(websocket, node):
                 "telemetry": {
                     "cpu_temp": get_cpu_temp(),
                     "cpu_load": psutil.cpu_percent(),
-                    "ram_usage": psutil.virtual_memory().percent
+                    "ram_usage": psutil.virtual_memory().percent,
+                    "battery_percent": node.bat_percent
                 },
                 "movement": {
                     "joy_x": round(node.joy_x, 2),

@@ -30,6 +30,9 @@ class MecanumJoyTeleop(Node):
         self.mute_pub = self.create_publisher(Bool, '/audio/mute', 10)
         self.mode_pub = self.create_publisher(Int32, '/robot/mode', 10)
         
+        self.bat_sub = self.create_subscription(Int32, 'battery_percent', self.battery_callback, 10)
+        self.battery_percent = -1
+        
         # State Machine
         self.current_mode = RobotMode.MANUAL
         
@@ -76,6 +79,9 @@ class MecanumJoyTeleop(Node):
     def map_trigger(self, val):
         # joy_node typically maps triggers from 1.0 (unpressed) to -1.0 (fully pressed)
         return (1.0 - val) / 2.0
+
+    def battery_callback(self, msg):
+        self.battery_percent = msg.data
 
     def joy_callback(self, msg):
         # Extract indices
@@ -235,6 +241,9 @@ class MecanumJoyTeleop(Node):
         print(f"=========================================")
         print(f"      MECANUM DASHBOARD : {mode_str}      ")
         print(f"=========================================")
+        
+        bat_str = f"{self.battery_percent}%" if self.battery_percent >= 0 else "WAITING..."
+        print(f"  Battery Level  : [ {bat_str} ]")
         print(f"  Sweeper Status : {'[ ON ] ' if self.sweeper_active else '[ OFF ]'}")
         print(f"  Audio Status   : {'[ MUTED ]' if self.is_muted else '[ UNMUTED ]'}")
         print(f"  Photo Trigger  : {'* CLICK *' if photo_trigger else 'Ready    '}")

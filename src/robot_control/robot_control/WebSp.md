@@ -329,6 +329,13 @@
         cpuLoadTarget = data.telemetry.cpu_load ?? cpuLoadTarget;
         ramTarget = data.telemetry.ram_usage ?? ramTarget;
         cpuTempTarget = data.telemetry.cpu_temp ?? cpuTempTarget;
+        
+        if (data.telemetry.battery_percent !== undefined) {
+          const batEl = $('batteryPercent');
+          if (batEl) {
+            batEl.textContent = data.telemetry.battery_percent + '%';
+          }
+        }
       }
     };
     
