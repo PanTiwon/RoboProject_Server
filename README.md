@@ -3,7 +3,7 @@
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble%20%2F%20Iron-blue.svg)](https://docs.ros.org/)
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%20%7C%20ESP32-green.svg)](#)
 [![Language](https://img.shields.io/badge/Language-Python%20%7C%20C%2B%2B-orange.svg)](#)
-[![Network](https://img.shields.io/badge/Network-Tailscale%20VPN-black.svg)](#)
+[![Network](https://img.shields.io/badge/Network-Tailscale%20VPN-red.svg)](#)
 
 A modular, distributed robotics software stack for a 4-wheel Mecanum waste collection robot. Built on **ROS 2**, the current iteration focuses on reliable teleoperation with real-time kinematics calculation, hardware safety isolation, low-latency telemetry streaming, and remote dashboard monitoring via Tailscale mesh networking. The software architecture is explicitly designed to seamlessly integrate autonomous navigation in future updates.
 
