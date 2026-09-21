@@ -53,13 +53,15 @@ flowchart LR
     subgraph Core ["robot_control Package"]
         Teleop["mecanum_joy_teleop\n(Kinematics & Logic)"]
         SerialNode["serial_controller\n(ESP32 Gateway)"]
-        AudioNode["audio_feedback_manager\n(State Event Listener)"]
+        CameraNode["camera_firebase_manager\n(On-Demand Stream & Capture)"]
+        AudioNode["audio_feedback_manager\n[UNDER MAINTENANCE]"]
         TelemetryNode["websocket_telemetry_funnel\n(Web Server & I2C Battery)"]
     end
 
     subgraph Outputs ["Hardware & UI Layer"]
         ESP32["ESP32 Driver\n(M1-M4 PWM + Sweeper)"]
         AudioOut["aplay\n(Local Audio Jack)"]
+        CameraOut["FPV Flask Stream\n(Port 5000) & Firebase"]
         Dashboard["Web UI Dashboard\n(Browser)"]
         UPS["UPS HAT\n(I2C)"]
     end
@@ -68,12 +70,14 @@ flowchart LR
     Teleop -->|/wheel_speeds| SerialNode
     Teleop -->|/robot/mode, /audio/mute| AudioNode
     Teleop -->|/telemetry| TelemetryNode
+    Teleop -->|Joy Start/Action 1| CameraNode
     
     UPS["UPS HAT"] -->|"I2C (0x2d)"| TelemetryNode
     TelemetryNode -->|/battery_percent| Teleop
 
     SerialNode -->|Serial <M1,M2,M3,M4,Sw>| ESP32
     AudioNode --> AudioOut
+    CameraNode --> CameraOut
     TelemetryNode --> Dashboard
 ```
 
@@ -117,8 +121,9 @@ flowchart LR
 |---|---|
 | **`mecanum_joy_teleop.py`** | Central command node. Ingests raw `/joy` inputs, performs deadzone filtering, executes 4-wheel **Inverse Kinematics**, displays a CLI dashboard, and publishes `/wheel_speeds`. |
 | **`serial_controller.py`** | High-speed, robust serial gateway to ESP32. Formats wheel commands into delimited ASCII packets (`<M1,M2,M3,M4,Sweeper>`) and reads hardware health acknowledgments. |
+| **`camera_firebase_manager.py`** | Native Python camera state manager. Provides an **On-Demand Local MJPEG FPV Stream** (Flask on Port 5000) using `rpicam-vid`. Handles high-res image capture resource locking, resizing, Base64 compression, and **Firebase RTDB uploads**. |
 | **`websocket_telemetry_funnel.py`** | Real-time monitoring server **and hardware monitor**. Broadcasts system status, motor speeds, and reads **UPS HAT battery via I2C (`smbus`)**. It feeds data to `WebSp.md` via WebSockets (Tailscale Funnel) and publishes `/battery_percent` back to the CLI dashboard. |
-| **`audio_feedback_manager.py`** | Headless status notifier. Uses `aplay` to play auditory cues for state transitions (e.g., Mode Switch, Emergency Stop, Connection Lost). |
+| **`audio_feedback_manager.py`** | **[CURRENTLY UNDER MAINTENANCE]** Headless status notifier. Uses `aplay` to play auditory cues for state transitions (e.g., Mode Switch, Emergency Stop, Connection Lost). |
 | **`robot_core.launch.py`** | Automated orchestration. Brings up all core nodes, parameter configurations, and serial connections in a single command. |
 
 ---
@@ -129,13 +134,13 @@ flowchart LR
    * While the robot currently operates strictly in Manual (Teleop) mode, using ROS 2 rather than a monolithic script provides structural fault isolation. It enables a seamless future transition to autonomous navigation simply by swapping the `/joy` topic with `Nav2`'s `cmd_vel` output, without rewriting the core actuation logic.
 2. **Decoupled ESP32 Serial Actuation:**
    * Linux on a Raspberry Pi is a Non-Real-Time OS. Offloading PWM signal generation to the ESP32 ensures zero jitter on high-power motor drivers, maintaining smooth locomotion.
-3. **Dedicated Audio Feedback Node:**
-   * In field-testing without an attached monitor, auditory feedback provides immediate operator confirmation for network dropouts, E-Stop states, and mode shifts.
+3. **On-Demand Camera Resource Management:**
+   * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle, it temporarily spawns an MJPEG Flask server via `rpicam-vid`. When a high-res photo is requested, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
 
 ---
 
 ## 🚀 6. Future Roadmap
-* **Vision & Object Detection:** Integrating a camera feed to run lightweight object detection models (e.g., YOLOv8) on the Raspberry Pi.
+* **Vision & Object Detection (OCR):** Integrating OpenCV into the camera manager pipeline to read meter numbers before Firebase upload (Semester 2).
 * **Full Autonomous Mode:** Developing the logic to transition from human-controlled `/joy` input to AI-driven navigation based on detected waste.
 * **Closed-Loop Speed Control:** Adding PID velocity control using quadrature encoders on the ESP32.
 
@@ -152,7 +157,8 @@ ros2_ws/
 │       ├── media/                         # Audio assets for system feedback (*.wav)
 │       ├── UPS_HAT_E/                     # UPS Battery hardware scripts & utilities
 │       ├── robot_control/                 # Python module source
-│       │   ├── audio_feedback_manager.py  # Event-based audio playback node
+│       │   ├── audio_feedback_manager.py  # [MAINTENANCE] Event-based audio playback node
+│       │   ├── camera_firebase_manager.py # Flask FPV Stream & Firebase Integration
 │       │   ├── mecanum_joy_teleop.py      # Core teleoperation & CLI Dashboard
 │       │   ├── serial_controller.py       # USB-Serial ESP32 communication gateway
 │       │   ├── websocket_telemetry_funnel.py # Tailscale Funnel WS & I2C Battery node

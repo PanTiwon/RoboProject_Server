@@ -7,6 +7,7 @@ from std_msgs.msg import Int32MultiArray, Bool, Int32
 import sys
 import os
 from robot_control.serial_controller import SerialController
+from robot_control.camera_firebase_manager import CameraFirebaseManager
 
 class RobotMode:
     MANUAL = 0
@@ -40,6 +41,7 @@ class MecanumJoyTeleop(Node):
         self.last_action1_state = 0
         self.last_action2_state = 0
         self.last_action3_state = 0
+        self.last_action_start_state = 0
         self.last_speed_down_state = 0
         self.last_speed_up_state = 0
         
@@ -61,6 +63,7 @@ class MecanumJoyTeleop(Node):
         self.declare_parameter('btn_sweeper', 1) # Action 2 (Circle/B)
         self.declare_parameter('btn_mute', 2) # Action 4 (Triangle/Y)
         self.declare_parameter('btn_mode', 6) # Action 3 / Mode Switch (Select / Share / Back)
+        self.declare_parameter('btn_start', 7) # Start / Options
         self.declare_parameter('btn_speed_down', 4) # L1 (Left Bumper)
         self.declare_parameter('btn_speed_up', 5) # R1 (Right Bumper)
         
@@ -72,6 +75,14 @@ class MecanumJoyTeleop(Node):
         serial_port = self.get_parameter('serial_port').value
         baudrate = self.get_parameter('serial_baudrate').value
         self.serial_ctrl = SerialController(port=serial_port, baudrate=baudrate, logger=self.get_logger())
+
+        # Initialize Camera & Firebase Subsystem
+        self.camera_manager = CameraFirebaseManager(
+            cred_path="/home/spark/firebase_key.json",
+            database_url="https://roboproject1-a9c63-default-rtdb.asia-southeast1.firebasedatabase.app/",
+            # processing_mode="OPENCV_OCR",  # Uncomment to override DEFAULT_PROCESSING_MODE from the class
+            logger=self.get_logger()
+        )
 
         self.get_logger().info("Mecanum Joy Teleop Node Started.")
         self.print_mode_status()
@@ -94,6 +105,7 @@ class MecanumJoyTeleop(Node):
         btn_sweeper_idx = self.get_parameter('btn_sweeper').value
         btn_mute_idx = self.get_parameter('btn_mute').value
         btn_mode_idx = self.get_parameter('btn_mode').value
+        btn_start_idx = self.get_parameter('btn_start').value
         btn_speed_down_idx = self.get_parameter('btn_speed_down').value
         btn_speed_up_idx = self.get_parameter('btn_speed_up').value
         
@@ -111,16 +123,18 @@ class MecanumJoyTeleop(Node):
             action2 = msg.buttons[btn_sweeper_idx]
             action_mute = msg.buttons[btn_mute_idx]
             action3 = msg.buttons[btn_mode_idx]
+            action_start = msg.buttons[btn_start_idx]
             speed_down = msg.buttons[btn_speed_down_idx]
             speed_up = msg.buttons[btn_speed_up_idx]
         except IndexError:
-            action1 = action2 = action_mute = action3 = speed_down = speed_up = 0
+            action1 = action2 = action_mute = action3 = action_start = speed_down = speed_up = 0
 
         # Edge detection for buttons
         action1_pressed = (action1 == 1 and self.last_action1_state == 0)
         action2_pressed = (action2 == 1 and self.last_action2_state == 0)
         action_mute_pressed = (action_mute == 1 and getattr(self, 'last_action_mute_state', 0) == 0)
         action3_pressed = (action3 == 1 and self.last_action3_state == 0)
+        action_start_pressed = (action_start == 1 and self.last_action_start_state == 0)
         speed_down_pressed = (speed_down == 1 and self.last_speed_down_state == 0)
         speed_up_pressed = (speed_up == 1 and self.last_speed_up_state == 0)
 
@@ -128,6 +142,7 @@ class MecanumJoyTeleop(Node):
         self.last_action2_state = action2
         self.last_action_mute_state = action_mute
         self.last_action3_state = action3
+        self.last_action_start_state = action_start
         self.last_speed_down_state = speed_down
         self.last_speed_up_state = speed_up
         
@@ -165,10 +180,14 @@ class MecanumJoyTeleop(Node):
             mute_msg.data = self.is_muted
             self.mute_pub.publish(mute_msg)
 
+        # Action Start: Toggle FPV Stream
+        if action_start_pressed:
+            self.camera_manager.toggle_stream()
+
         # Action 1: Photo
         photo_trigger = action1_pressed
         if action1_pressed:
-            pass # Implement photo logic here
+            self.camera_manager.capture_and_upload_task()
 
         # Action 2: Sweeper Toggle
         if action2_pressed:
@@ -245,6 +264,7 @@ class MecanumJoyTeleop(Node):
         bat_str = f"{self.battery_percent}%" if self.battery_percent >= 0 else "WAITING..."
         print(f"  Battery Level  : [ {bat_str} ]")
         print(f"  Sweeper Status : {'[ ON ] ' if self.sweeper_active else '[ OFF ]'}")
+        print(f"  FPV Stream     : {'[ LIVE ] (Port 5000)' if self.camera_manager.is_streaming else '[ OFF ] (Press Start)'}")
         print(f"  Audio Status   : {'[ MUTED ]' if self.is_muted else '[ UNMUTED ]'}")
         print(f"  Photo Trigger  : {'* CLICK *' if photo_trigger else 'Ready    '}")
         print(f"  Speed Level    : [{speed_bars}{speed_spaces}] {speed_percent}%  (L1/R1 to Adjust)")
