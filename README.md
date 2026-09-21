@@ -191,3 +191,18 @@ ros2 launch robot_control robot_core.launch.py
 # Launch Web Telemetry Server (Terminal 2)
 ros2 run robot_control websocket_telemetry_funnel
 ```
+
+### 🌐 Accessing the Dashboard & Camera
+
+Once the system is running, you can monitor the robot remotely:
+
+**1. Telemetry Web Dashboard (Hosted on Netlify)**
+* Access the main control interface here: **[🔗 Your Netlify Dashboard URL](https://refuserobot.netlify.app/)**
+* **Local Network / VPN:** Configure the dashboard's WebSocket URL to connect to `ws://<RASPBERRY_PI_IP>:8080`
+* **Public Internet:** If you ran `tailscale funnel 8080`, configure the dashboard to connect securely via `wss://<YOUR_TAILSCALE_URL>`
+
+**2. FPV Camera Live Stream**
+* The stream defaults to **OFF** to save bandwidth and battery. 
+* Press the **Start** button on your gamepad to toggle the stream **ON**.
+* Open a browser and navigate to: `http://<RASPBERRY_PI_IP>:5000`
+* *(Note: To view the FPV stream over the public internet, you must run `tailscale funnel --bg 5000` on the Pi).*
