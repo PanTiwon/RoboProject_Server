@@ -197,7 +197,7 @@ ros2 run robot_control websocket_telemetry_funnel
 Once the system is running, you can monitor the robot remotely:
 
 **1. Telemetry Web Dashboard (Hosted on Netlify)**
-* Access the main control interface here: **[🔗 Your Netlify Dashboard URL](https://refuserobot.netlify.app/)**
+* Access the main control interface here: **[🔗 Refuse Robot - Netlify](https://refuserobot.netlify.app/)**
 * **Local Network / VPN:** Configure the dashboard's WebSocket URL to connect to `ws://<RASPBERRY_PI_IP>:8080`
 * **Public Internet:** If you ran `tailscale funnel 8080`, configure the dashboard to connect securely via `wss://<YOUR_TAILSCALE_URL>`
 
