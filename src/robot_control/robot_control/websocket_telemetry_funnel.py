@@ -44,7 +44,7 @@ class TelemetryNode(Node):
         self.wheel_bl = 0
         self.wheel_br = 0
         
-        self.sweeper_status = "Offline"
+        self.vacuum_status = "Offline"
         self.robot_mode = "MANUAL"
         self.last_joy_time = 0.0
         
@@ -120,8 +120,8 @@ class TelemetryNode(Node):
             elif mode_val == 1: self.robot_mode = "DEMO"
             elif mode_val == 2: self.robot_mode = "AUTO"
         if len(msg.data) >= 6:
-            sweeper_active = (msg.data[5] == 1)
-            self.sweeper_status = "Online" if sweeper_active else "Offline"
+            vacuum_active = (msg.data[5] == 1)
+            self.vacuum_status = "Online" if vacuum_active else "Offline"
 
     def get_controller_status(self):
         if self.last_joy_time > 0 and (time.time() - self.last_joy_time) < 2.0:
@@ -160,7 +160,7 @@ async def broadcast_telemetry(websocket, node):
                     "motor": "Online" if node.robot_mode == "DEMO" else node.get_motor_status(),
                     "controller": node.get_controller_status(),
                     "camera": "Online" if node.robot_mode == "DEMO" else node.get_camera_status(),
-                    "sweeper": "Online" if node.robot_mode == "DEMO" else ("Offline" if node.get_esp32_status() == "Offline" else node.sweeper_status),
+                    "vacuum": "Online" if node.robot_mode == "DEMO" else ("Offline" if node.get_esp32_status() == "Offline" else node.vacuum_status),
                     "mode": node.robot_mode
                 },
                 "telemetry": {
@@ -210,7 +210,7 @@ async def process_request(path, request_headers, node=None):
                 "motor": "Online" if node.robot_mode == "DEMO" else node.get_motor_status(),
                 "controller": node.get_controller_status(),
                 "camera": "Online" if node.robot_mode == "DEMO" else node.get_camera_status(),
-                "sweeper": "Online" if node.robot_mode == "DEMO" else ("Offline" if node.get_esp32_status() == "Offline" else node.sweeper_status),
+                "vacuum": "Online" if node.robot_mode == "DEMO" else ("Offline" if node.get_esp32_status() == "Offline" else node.vacuum_status),
                 "mode": node.robot_mode
             }
         }

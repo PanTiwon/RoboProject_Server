@@ -27,7 +27,7 @@
 
   // Sub-component statuses (driven by WebSocket and/or HTTP poll)
   let cameraOnline = false;
-  let sweeperOnline = false;
+  let vacuumOnline = false;
   
   const links = [
     ['controller-pi', 'controller', 'pi'],
@@ -198,13 +198,13 @@
       camText.textContent = effectiveCameraOnline ? 'ONLINE' : 'OFFLINE';
     }
 
-    // --- Sub-status: Sweeper (only online if ESP32 itself is online) ---
-    const effectiveSweeperOnline = sweeperOnline && espReachable;
-    const swpBadge = $('sweeperSubBadge');
-    const swpText  = $('sweeperStatus');
+    // --- Sub-status: Vacuum (only online if ESP32 itself is online) ---
+    const effectiveVacuumOnline = vacuumOnline && espReachable;
+    const swpBadge = $('vacuumSubBadge');
+    const swpText  = $('vacuumStatus');
     if(swpBadge && swpText){
-      swpBadge.classList.toggle('online', effectiveSweeperOnline);
-      swpText.textContent = effectiveSweeperOnline ? 'ONLINE' : 'OFFLINE';
+      swpBadge.classList.toggle('online', effectiveVacuumOnline);
+      swpText.textContent = effectiveVacuumOnline ? 'ONLINE' : 'OFFLINE';
     }
 
     return { piReachable, espReachable, motorsReachable };
@@ -265,7 +265,7 @@
   // ==========================================
   // 6. WEBSOCKET HANDLER 
   // ==========================================
-  const WS_URL = 'wss://core.tailb47df1.ts.net:8080';
+  const WS_URL = 'wss://core.tailb47df1.ts.net';
   let ws;
 
   function connectWebSocket(){
@@ -293,7 +293,7 @@
 
         // Parse sub-component statuses
         cameraOnline  = (data.status.camera  === "Online");
-        sweeperOnline = (data.status.sweeper === "Online");
+        vacuumOnline = (data.status.vacuum === "Online");
 
         // DEMO OVERRIDE: If we are in DEMO mode, fake the ESP32/Motors to Online 
         // so the UI allows the wheels to spin visually!
@@ -372,7 +372,7 @@
   //      "esp32":      "Online",   // "Online" | "Offline"
   //      "motor":      "Online",   // "Online" | "Offline"
   //      "camera":     "Online",   // "Online" | "Offline"  ← NEW
-  //      "sweeper":    "Offline",  // "Online" | "Offline"  ← NEW
+  //      "vacuum":    "Offline",  // "Online" | "Offline"  ← NEW
   //      "mode":       "LIVE"      // "LIVE"   | "DEMO"
   //    }
   //  }
@@ -382,7 +382,7 @@
   // delivered over WebSocket for low latency.
   //
   function fetchStatus(){
-    fetch('https://core.tailb47df1.ts.net:8080/api/status')
+    fetch('https://core.tailb47df1.ts.net/api/status')
       .then(function(res){
         if(!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
@@ -398,7 +398,7 @@
 
         // Update sub-component statuses
         cameraOnline  = (data.status.camera  === "Online");
-        sweeperOnline = (data.status.sweeper === "Online");
+        vacuumOnline = (data.status.vacuum === "Online");
 
         // DEMO mode override (mirrors WebSocket logic)
         if(data.status.mode === "DEMO"){
@@ -411,7 +411,7 @@
           updateModeDisplay(data.status.mode);
         }
 
-        pushLog('Status poll OK — cam:' + (cameraOnline ? 'ON' : 'OFF') + ' sweep:' + (sweeperOnline ? 'ON' : 'OFF'), 'info');
+        pushLog('Status poll OK — cam:' + (cameraOnline ? 'ON' : 'OFF') + ' sweep:' + (vacuumOnline ? 'ON' : 'OFF'), 'info');
       })
       .catch(function(err){
         pushLog('Status poll error: ' + err.message, 'warn');

@@ -45,8 +45,12 @@ class MecanumJoyTeleop(Node):
         self.last_speed_down_state = 0
         self.last_speed_up_state = 0
         
+        # Camera Mount Angles
+        self.yaw_angle = 0.0
+        self.pitch_angle = 0.0
+        
         # Robot States
-        self.sweeper_active = False
+        self.vacuum_active = False
         self.is_muted = False
         
         # Speed levels (Multiplier for max_speed)
@@ -58,9 +62,11 @@ class MecanumJoyTeleop(Node):
         self.declare_parameter('axis_backward', 2) # L2 (Left Trigger)
         self.declare_parameter('axis_strafe', 0) # Left Analog X
         self.declare_parameter('axis_rotate', 3) # Right Analog X
+        self.declare_parameter('axis_dpad_x', 6) # D-pad Horizontal
+        self.declare_parameter('axis_dpad_y', 7) # D-pad Vertical
         
         self.declare_parameter('btn_photo', 0) # Action 1 (Cross/A)
-        self.declare_parameter('btn_sweeper', 1) # Action 2 (Circle/B)
+        self.declare_parameter('btn_vacuum', 1) # Action 2 (Circle/B)
         self.declare_parameter('btn_mute', 2) # Action 4 (Triangle/Y)
         self.declare_parameter('btn_mode', 6) # Action 3 / Mode Switch (Select / Share / Back)
         self.declare_parameter('btn_start', 7) # Start / Options
@@ -86,6 +92,12 @@ class MecanumJoyTeleop(Node):
 
         self.get_logger().info("Mecanum Joy Teleop Node Started.")
         self.print_mode_status()
+        
+        # Store latest joy message
+        self.last_joy_msg = None
+        
+        # Create a 20Hz control loop
+        self.create_timer(0.05, self.control_loop)
 
     def map_trigger(self, val):
         # joy_node typically maps triggers from 1.0 (unpressed) to -1.0 (fully pressed)
@@ -95,14 +107,24 @@ class MecanumJoyTeleop(Node):
         self.battery_percent = msg.data
 
     def joy_callback(self, msg):
+        self.last_joy_msg = msg
+
+    def control_loop(self):
+        if self.last_joy_msg is None:
+            return
+            
+        msg = self.last_joy_msg
+        
         # Extract indices
         axis_fwd = self.get_parameter('axis_forward').value
         axis_bwd = self.get_parameter('axis_backward').value
         axis_strafe = self.get_parameter('axis_strafe').value
         axis_rot = self.get_parameter('axis_rotate').value
+        axis_dpad_x = self.get_parameter('axis_dpad_x').value
+        axis_dpad_y = self.get_parameter('axis_dpad_y').value
         
         btn_photo_idx = self.get_parameter('btn_photo').value
-        btn_sweeper_idx = self.get_parameter('btn_sweeper').value
+        btn_vacuum_idx = self.get_parameter('btn_vacuum').value
         btn_mute_idx = self.get_parameter('btn_mute').value
         btn_mode_idx = self.get_parameter('btn_mode').value
         btn_start_idx = self.get_parameter('btn_start').value
@@ -115,12 +137,14 @@ class MecanumJoyTeleop(Node):
             bwd_val = self.map_trigger(msg.axes[axis_bwd])
             strafe_val = msg.axes[axis_strafe] 
             rot_val = msg.axes[axis_rot] 
+            dpad_x_val = msg.axes[axis_dpad_x]
+            dpad_y_val = msg.axes[axis_dpad_y]
         except IndexError:
-            fwd_val = bwd_val = strafe_val = rot_val = 0.0
+            fwd_val = bwd_val = strafe_val = rot_val = dpad_x_val = dpad_y_val = 0.0
 
         try:
             action1 = msg.buttons[btn_photo_idx]
-            action2 = msg.buttons[btn_sweeper_idx]
+            action2 = msg.buttons[btn_vacuum_idx]
             action_mute = msg.buttons[btn_mute_idx]
             action3 = msg.buttons[btn_mode_idx]
             action_start = msg.buttons[btn_start_idx]
@@ -155,7 +179,7 @@ class MecanumJoyTeleop(Node):
         # Action 3: Cycle modes
         if action3_pressed:
             # Stop the robot immediately when leaving a mode that could be moving it
-            self.serial_ctrl.send_command([0, 0, 0, 0], self.sweeper_active)
+            self.serial_ctrl.send_command([0, 0, 0, 0], self.vacuum_active, self.yaw_angle, self.pitch_angle)
             
             if self.current_mode == RobotMode.MANUAL:
                 self.current_mode = RobotMode.DEMO
@@ -187,11 +211,25 @@ class MecanumJoyTeleop(Node):
         # Action 1: Photo
         photo_trigger = action1_pressed
         if action1_pressed:
-            self.camera_manager.capture_and_upload_task()
+            self.camera_manager.capture_and_upload_task(self.pitch_angle)
 
-        # Action 2: Sweeper Toggle
+        # Action 2: Vacuum Toggle
         if action2_pressed:
-            self.sweeper_active = not self.sweeper_active
+            self.vacuum_active = not self.vacuum_active
+            
+        # Continuous Camera Yaw/Pitch Control via D-pad (approx 2 degrees per 0.05s tick = 40 deg/sec)
+        if dpad_x_val > 0.5:
+            self.yaw_angle = min(90.0, self.yaw_angle + 2.0)
+        elif dpad_x_val < -0.5:
+            self.yaw_angle = max(-90.0, self.yaw_angle - 2.0)
+            
+        if dpad_y_val > 0.5:
+            self.pitch_angle = min(90.0, self.pitch_angle + 2.0)
+        elif dpad_y_val < -0.5:
+            self.pitch_angle = max(-30.0, self.pitch_angle - 2.0)
+            
+        self.camera_manager.current_yaw = int(self.yaw_angle)
+        self.camera_manager.current_pitch = int(self.pitch_angle)
 
         # Compute combined linear_x
         linear_x = fwd_val - bwd_val
@@ -210,14 +248,14 @@ class MecanumJoyTeleop(Node):
             
             if self.current_mode == RobotMode.MANUAL:
                 if is_esp32_connected:
-                    self.serial_ctrl.send_command([v_fl, v_fr, v_rl, v_rr], self.sweeper_active)
+                    self.serial_ctrl.send_command([v_fl, v_fr, v_rl, v_rr], self.vacuum_active, self.yaw_angle, self.pitch_angle)
                 else:
                     # In Manual mode, if hardware is disconnected, wheels cannot move physically
                     v_fl = v_fr = v_rl = v_rr = 0
             
             # Publish wheel speeds and mode for the WebSocket node to catch
             wheels_msg = Int32MultiArray()
-            wheels_msg.data = [v_fl, v_fr, v_rl, v_rr, self.current_mode, 1 if self.sweeper_active else 0]
+            wheels_msg.data = [v_fl, v_fr, v_rl, v_rr, self.current_mode, 1 if self.vacuum_active else 0]
             self.wheels_pub.publish(wheels_msg)
             
             # Show Dashboard for BOTH modes!
@@ -263,7 +301,8 @@ class MecanumJoyTeleop(Node):
         
         bat_str = f"{self.battery_percent}%" if self.battery_percent >= 0 else "WAITING..."
         print(f"  Battery Level  : [ {bat_str} ]")
-        print(f"  Sweeper Status : {'[ ON ] ' if self.sweeper_active else '[ OFF ]'}")
+        print(f"  Vacuum Status : {'[ ON ] ' if self.vacuum_active else '[ OFF ]'}")
+        print(f"  Camera Mount   : Yaw [ {int(self.yaw_angle):>3}° ] Pitch [ {int(self.pitch_angle):>3}° ]")
         print(f"  FPV Stream     : {'[ LIVE ] (Port 5000)' if self.camera_manager.is_streaming else '[ OFF ] (Press Start)'}")
         print(f"  Audio Status   : {'[ MUTED ]' if self.is_muted else '[ UNMUTED ]'}")
         print(f"  Photo Trigger  : {'* CLICK *' if photo_trigger else 'Ready    '}")
@@ -304,10 +343,10 @@ class MecanumJoyTeleop(Node):
         sys.stdout.flush()
 
     def execute_auto_mode(self):
-        self.serial_ctrl.send_command([0, 0, 0, 0], self.sweeper_active)
+        self.serial_ctrl.send_command([0, 0, 0, 0], self.vacuum_active, self.yaw_angle, self.pitch_angle)
         
         wheels_msg = Int32MultiArray()
-        wheels_msg.data = [0, 0, 0, 0, self.current_mode, 1 if self.sweeper_active else 0]
+        wheels_msg.data = [0, 0, 0, 0, self.current_mode, 1 if self.vacuum_active else 0]
         self.wheels_pub.publish(wheels_msg)
         
         sys.stdout.write('\033[H')

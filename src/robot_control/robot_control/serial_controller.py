@@ -22,17 +22,20 @@ class SerialController:
             if self.logger:
                 self.logger.error(f"Failed to connect to ESP32: {e}")
 
-    def send_command(self, speeds, sweeper_on):
+    def send_command(self, speeds, vacuum_on, yaw=0.0, pitch=0.0):
         """
-        แปลงข้อมูลตัวเลขให้เป็น String รูปแบบ <M1,M2,M3,M4,Sweeper> แล้วส่งไป
+        แปลงข้อมูลตัวเลขให้เป็น String รูปแบบ <M1,M2,M3,M4,Vacuum,Yaw,Pitch> แล้วส่งไป
         :param speeds: list ความเร็วมอเตอร์ [M1, M2, M3, M4]
-        :param sweeper_on: boolean เปิด/ปิดไม้กวาด (True/False)
+        :param vacuum_on: boolean เปิด/ปิดมอเตอร์ดูดฝุ่น (True/False)
+        :param yaw: float มุม Yaw ของกล้อง (-90 ถึง 90) X
+        :param pitch: float มุม Pitch ของกล้อง (-90 ถึง 90) Y
         """
         if not self.ser or not self.ser.is_open:
             return
 
-        sweeper_val = 1 if sweeper_on else 0
-        payload = f"<{speeds[0]},{speeds[1]},{speeds[2]},{speeds[3]},{sweeper_val}>\n"
+        # Relay control: 1 = ON, 0 = OFF
+        vacuum_val = 1 if vacuum_on else 0
+        payload = f"<{speeds[0]},{speeds[1]},{speeds[2]},{speeds[3]},{vacuum_val},{int(yaw)},{int(pitch)}>\n"
         
         try:
             self.ser.write(payload.encode('utf-8'))
@@ -44,7 +47,7 @@ class SerialController:
         """ส่งคำสั่งให้หุ่นหยุดนิ่ง แล้วปิดการเชื่อมต่อ Serial อย่างปลอดภัย"""
         if self.ser and self.ser.is_open:
             try:
-                self.ser.write(b"<0,0,0,0,0>\n")
+                self.ser.write(b"<0,0,0,0,0,0,0>\n")
             except:
                 pass
             self.ser.close()
