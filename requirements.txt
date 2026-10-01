@@ -1,0 +1,24 @@
+# Robot Control Python Dependencies
+# (Note: ROS 2 packages like rclpy, std_msgs, sensor_msgs are provided by the ROS 2 environment)
+# (Note: smbus is installed via 'sudo apt install python3-smbus')
+
+# Flask for the FPV MJPEG stream and Wi-Fi Captive Portal
+Flask>=2.2.0
+
+# OpenCV for HUD Overlay on the FPV stream (Headless version recommended to avoid GUI dependencies on Pi)
+opencv-python-headless>=4.6.0
+
+# PySerial for ESP32 communication gateway
+pyserial>=3.5
+
+# Firebase Admin SDK for Realtime Database uploads
+firebase-admin>=6.0.0
+
+# WebSockets for Telemetry Funnel
+websockets>=10.0
+
+# PSUtil for system monitoring (optional but recommended for funnel)
+psutil>=5.9.0
+
+# Numpy for image processing logic
+numpy>=1.21.0
