@@ -128,6 +128,7 @@ flowchart LR
 | **`websocket_telemetry_funnel.py`** | Real-time monitoring server **and hardware monitor**. Broadcasts system status, motor speeds, and reads **UPS HAT battery via I2C (`smbus`)**. It feeds data to the Web UI via WebSockets (Tailscale Funnel) and publishes `/battery_percent` back to the CLI dashboard. |
 | **`audio_feedback_manager.py`** | **[CURRENTLY UNDER MAINTENANCE]** Headless status notifier. Uses `aplay` to play auditory cues for state transitions. |
 | **`robot_core.launch.py`** | Automated orchestration. Brings up all core nodes, parameter configurations, and serial connections in a single command. |
+| **`setup_wifi.py` & `startup_network.sh`** | **Headless Wi-Fi Captive Portal**. A systemd-enabled networking utility. On boot without internet, it spawns an AP Hotspot and a mobile-friendly Flask web UI to easily switch Wi-Fi networks in the field. |
 
 ---
 
@@ -141,6 +142,8 @@ flowchart LR
    * Linux on a Raspberry Pi is a Non-Real-Time OS. Offloading PWM signal generation and Relay triggering to the ESP32 ensures zero jitter on high-power motor drivers, maintaining smooth locomotion.
 4. **On-Demand Camera Resource Management:**
    * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle, it temporarily spawns an MJPEG Flask server via `rpicam-vid`. When a high-res photo is requested, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
+5. **Headless Wi-Fi Setup for Field Deployment (Dynamic Configuration):**
+   * Field testing often involves unknown network environments where SSH or external monitors are unavailable. The `startup_network.sh` boot script uses `nmcli` to ping for internet access on boot. If it fails, it instantly broadcasts an AP Hotspot (Mecanum_Setup). Operators can connect via their smartphones to access the `setup_wifi.py` Flask portal, allowing them to enter new Wi-Fi credentials on the fly. This guarantees immediate, seamless network switching when migrating the robot between locations.
 
 ---
 
@@ -155,6 +158,10 @@ flowchart LR
 
 ```text
 ros2_ws/
+├── scripts/
+│   ├── setup_wifi.py              # Flask Wi-Fi Captive Portal UI
+│   ├── startup_network.sh         # Network check & Hotspot boot script
+│   └── robot-portal.service       # Systemd unit for the portal
 ├── src/
 │   └── robot_control/
 │       ├── launch/
@@ -174,15 +181,25 @@ ros2_ws/
 
 ---
 
-## ⚙️ 8. Quick Start & Launch
+## 🛠️ 8. Prerequisites & Dependencies
 
-### Prerequisites
-* ROS 2 (Humble/Iron/Jazzy)
-* Python 3.10+
-* `alsa-utils` (for `aplay`)
-* `python3-smbus` (for I2C Battery Monitoring)
-* `opencv-python-headless` (for FPV HUD Overlay)
-* Tailscale (for remote telemetry)
+**Operating System:** Ubuntu 22.04 (Jammy) or newer, with **ROS 2** (Humble/Iron/Jazzy) installed.
+
+### 1. System Dependencies (OS Level)
+Install the required system packages. This includes NetworkManager (essential for the Wi-Fi Captive Portal), audio utilities, and I2C tools:
+```bash
+sudo apt update && sudo apt install network-manager alsa-utils python3-smbus
+```
+
+### 2. Python Libraries
+Install the necessary Python dependencies. Core libraries include `Flask` (for the FPV stream and Wi-Fi portal), `opencv-python-headless` (for the Camera HUD), and `pyserial`:
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 🚀 9. Quick Start & Launch
 
 ### Build & Run
 ```bash

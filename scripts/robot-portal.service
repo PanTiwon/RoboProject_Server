@@ -1,0 +1,14 @@
+[Unit]
+Description=Robot Startup Network Check & Captive Portal
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/spark/ros2_ws
+ExecStart=/bin/bash /home/spark/ros2_ws/scripts/startup_network.sh
+Restart=no
+
+[Install]
+WantedBy=multi-user.target
