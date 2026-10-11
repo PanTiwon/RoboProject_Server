@@ -232,7 +232,7 @@ sudo apt update && sudo apt install network-manager alsa-utils python3-smbus i2c
 > **Passwordless Sudo for Graceful Shutdown:**
 > To allow the teleoperation node to execute system poweroff and I2C commands without prompting for a sudo password, configure a rule via `sudo visudo` or by creating `/etc/sudoers.d/robot-power`:
 > ```text
-> spark ALL=(ALL) NOPASSWD: /sbin/poweroff, /usr/sbin/i2cset
+> $USER ALL=(ALL) NOPASSWD: /sbin/poweroff, /usr/sbin/i2cset
 > ```
 
 ### 2. Python Libraries
