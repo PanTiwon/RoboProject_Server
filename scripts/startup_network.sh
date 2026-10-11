@@ -22,6 +22,12 @@ if ping -c 2 -W 3 "$CHECK_HOST" > /dev/null 2>&1; then
 fi
 
 echo "[StartupNet] ⚠️ No internet connection detected!"
+
+# สแกนสัญญาณ Wi-Fi รอบตัวเก็บเข้าแคชไว้ล่วงหน้าก่อนเปิด Hotspot
+echo "[StartupNet] Pre-scanning nearby Wi-Fi networks..."
+nmcli device wifi rescan ifname "$IFACE" > /dev/null 2>&1 || true
+sleep 1.5
+
 echo "[StartupNet] Activating Hotspot: SSID='$HOTSPOT_SSID' (Pass='$HOTSPOT_PASS') ..."
 
 # เคลียร์การเชื่อมต่อ Hotspot เดิมหากมีค้างอยู่

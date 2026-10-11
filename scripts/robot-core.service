@@ -1,0 +1,17 @@
+[Unit]
+Description=Refuse Robot Core ROS 2 Autostart Stack
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spark
+Group=spark
+WorkingDirectory=/home/spark/ros2_ws
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/bin/bash /home/spark/ros2_ws/scripts/start_ros2.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

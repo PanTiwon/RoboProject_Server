@@ -40,3 +40,12 @@ MANIFEST
 # OS Data
 .DS_Store
 images/
+
+# Runtime / Offline Data & Credentials
+pending_uploads.json
+*firebase*.json
+*credentials*.json
+*.key
+*.pem
+*.log
+

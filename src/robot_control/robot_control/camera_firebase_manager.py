@@ -12,6 +12,8 @@ from firebase_admin import credentials, initialize_app, db
 # Flask imports for MJPEG Stream
 from flask import Flask, Response, render_template_string
 import logging
+import json
+import uuid
 
 # ==========================================
 # SYSTEM CONFIGURATION: CHOOSE PROCESSING MODE
@@ -213,6 +215,7 @@ class CameraFirebaseManager:
         
         self.workspace_dir = os.path.expanduser("~/ros2_ws")
         self.images_dir = os.path.join(self.workspace_dir, "images")
+        self.pending_file = os.path.join(self.workspace_dir, "pending_uploads.json")
         os.makedirs(self.images_dir, exist_ok=True)
         
         # State tracking
@@ -235,6 +238,72 @@ class CameraFirebaseManager:
 
         self._init_firebase()
 
+        # Start offline sync worker
+        self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
+        self.sync_thread.start()
+
+    def _sync_worker(self):
+        """Background thread to sync offline payloads when internet returns."""
+        while True:
+            time.sleep(10) # Check every 10 seconds
+            if not os.path.exists(self.pending_file):
+                continue
+            
+            pending = []
+            with self._upload_lock:
+                try:
+                    with open(self.pending_file, 'r') as f:
+                        pending = json.load(f)
+                except Exception:
+                    pending = []
+            
+            if not pending:
+                continue
+            
+            # Attempt to upload the first item
+            payload = pending[0]
+            record_id = payload.get("record_id")
+            if not record_id:
+                record_id = uuid.uuid4().hex
+                payload["record_id"] = record_id
+
+            try:
+                self._log_info(f"Attempting offline sync for record {record_id}...")
+                db.reference(f'/meter_records/{record_id}').set(payload)
+                self._log_info(f"Offline sync successful for {record_id}")
+                
+                # Remove from queue and save
+                with self._upload_lock:
+                    try:
+                        with open(self.pending_file, 'r') as f:
+                            current_pending = json.load(f)
+                        if current_pending and current_pending[0].get("record_id") == record_id:
+                            current_pending.pop(0)
+                            with open(self.pending_file, 'w') as f:
+                                json.dump(current_pending, f)
+                    except Exception as e:
+                        self._log_error(f"Failed to update pending file after sync: {e}")
+            except Exception as e:
+                self._log_error(f"Offline sync failed (still offline?): {e}")
+                time.sleep(20) # Wait longer if we are offline
+
+    def _queue_payload(self, payload):
+        """Save payload to pending queue for offline sync."""
+        with self._upload_lock:
+            pending = []
+            if os.path.exists(self.pending_file):
+                try:
+                    with open(self.pending_file, 'r') as f:
+                        pending = json.load(f)
+                except Exception:
+                    pass
+            pending.append(payload)
+            try:
+                with open(self.pending_file, 'w') as f:
+                    json.dump(pending, f)
+            except Exception as e:
+                self._log_error(f"Failed to write to pending file: {e}")
+
     def _run_flask_server(self):
         try:
             self._log_info("Starting Flask FPV server on 0.0.0.0:5000 (Stream OFF by default)")
@@ -250,9 +319,9 @@ class CameraFirebaseManager:
             "-n", # Disable preview window to prevent crash on headless
             "-t", "0",
             "--codec", "mjpeg",
-            "--width", "1280",
-            "--height", "720",
-            "--framerate", "30",
+            "--width", "640",
+            "--height", "480",
+            "--framerate", "25",
             "--inline",
             "-o", "-" # Output to stdout
         ]
@@ -440,22 +509,31 @@ class CameraFirebaseManager:
 
             # 5. Push to Firebase RTDB
             self._log_info("Pushing to Firebase RTDB (/meter_records)...")
-            ref = db.reference('/meter_records')
-            new_record_ref = ref.push()
             
+            try:
+                record_id = db.reference('/meter_records').push().key
+            except Exception:
+                record_id = uuid.uuid4().hex
+                
             meter_type = "electricity" if pitch_angle > 0 else "water"
             
             payload = {
-                "record_id": new_record_ref.key,
+                "record_id": record_id,
                 "filename": filename,
                 "image_base64": data_uri,
                 "timestamp": iso_timestamp,
                 "meter_reading": meter_reading,
                 "meter_type": meter_type
             }
-            new_record_ref.set(payload)
-            self.last_capture_time = time.time()
-            self._log_info(f"Successfully pushed to RTDB! Record ID: {new_record_ref.key} | Mode: {self.processing_mode}")
+
+            try:
+                db.reference(f'/meter_records/{record_id}').set(payload)
+                self.last_capture_time = time.time()
+                self._log_info(f"Successfully pushed to RTDB! Record ID: {record_id} | Mode: {self.processing_mode}")
+            except Exception as e:
+                self._log_error(f"Upload failed: {e}. Queuing for offline sync.")
+                self.last_capture_time = time.time()
+                self._queue_payload(payload)
 
         except Exception as e:
             self._log_error(f"Exception in worker: {e}")

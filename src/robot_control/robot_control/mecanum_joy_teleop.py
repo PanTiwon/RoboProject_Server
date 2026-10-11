@@ -6,6 +6,7 @@ from sensor_msgs.msg import Joy
 from std_msgs.msg import Int32MultiArray, Bool, Int32
 import sys
 import os
+import time
 from robot_control.serial_controller import SerialController
 from robot_control.camera_firebase_manager import CameraFirebaseManager
 
@@ -56,6 +57,11 @@ class MecanumJoyTeleop(Node):
         # Speed levels (Multiplier for max_speed)
         self.speed_levels = [0.25, 0.50, 0.75, 1.0]
         self.current_speed_idx = 3 # Start at 1.0 (100%)
+
+        # Graceful Hardware Shutdown states
+        self.shutdown_start_time = None
+        self.shutdown_countdown_sec = 0.0
+        self.is_shutting_down = False
         
         # Joystick mappings (standard PS4/Xbox mappings)
         self.declare_parameter('axis_forward', 5) # R2 (Right Trigger)
@@ -170,12 +176,18 @@ class MecanumJoyTeleop(Node):
         self.last_speed_down_state = speed_down
         self.last_speed_up_state = speed_up
         
-        # Speed Control (L1 / R1)
-        if speed_down_pressed:
+        # Speed Control (L1 / R1) - Only adjust speed if NOT holding both together (which is shutdown combo)
+        if speed_down_pressed and not speed_up:
             self.current_speed_idx = max(0, self.current_speed_idx - 1)
-        if speed_up_pressed:
+        if speed_up_pressed and not speed_down:
             self.current_speed_idx = min(len(self.speed_levels) - 1, self.current_speed_idx + 1)
         
+        # Check L1 and R1 combo for graceful shutdown
+        # L1 is Button 4 (btn_speed_down), R1 is Button 5 (btn_speed_up)
+        l1_held = (len(msg.buttons) > btn_speed_down_idx and msg.buttons[btn_speed_down_idx] == 1)
+        r1_held = (len(msg.buttons) > btn_speed_up_idx and msg.buttons[btn_speed_up_idx] == 1)
+        combo_held = l1_held and r1_held
+
         # Action 3: Cycle modes
         if action3_pressed:
             # Stop the robot immediately when leaving a mode that could be moving it
@@ -235,6 +247,50 @@ class MecanumJoyTeleop(Node):
         linear_x = fwd_val - bwd_val
         linear_y = strafe_val
         angular_z = rot_val
+
+        # Safety Interlock: check if robot is stationary (0.15 deadzone to eliminate analog stick resting drift)
+        is_stationary = (abs(fwd_val) < 0.15 and abs(bwd_val) < 0.15 and abs(strafe_val) < 0.15 and abs(rot_val) < 0.15)
+        
+        # Save state for dashboard display
+        self.last_l1_held = l1_held
+        self.last_r1_held = r1_held
+        self.last_is_stationary = is_stationary
+
+        # Graceful Hardware Shutdown Logic (Safety Interlock)
+        current_time = time.time()
+        if combo_held and is_stationary and not self.is_shutting_down:
+            if self.shutdown_start_time is None:
+                self.shutdown_start_time = current_time
+                self.get_logger().warn("[POWER] Hold L1 + R1 for 5 seconds to SHUTDOWN...")
+
+            elapsed = current_time - self.shutdown_start_time
+            self.shutdown_countdown_sec = max(0.0, 5.0 - elapsed)
+
+            if elapsed >= 5.0:
+                self.is_shutting_down = True
+                self.get_logger().error("==================================================")
+                self.get_logger().error("🛑 [POWER] GRACEFUL HARDWARE SHUTDOWN TRIGGERED!")
+                self.get_logger().error("==================================================")
+
+                # 1) Stop all motors immediately
+                self.serial_ctrl.send_command([0, 0, 0, 0], False, self.yaw_angle, self.pitch_angle)
+
+                # 2) Command Waveshare UPS HAT via I2C (Address 0x2d) to cut 5V power in 30 seconds
+                self.get_logger().info("Sending I2C cut-off command to Waveshare UPS HAT (0x2d)...")
+                os.system("i2cset -y 1 0x2d 0x01 0x55 || sudo i2cset -y 1 0x2d 0x01 0x55")
+
+                # 3) Gracefully power off the Ubuntu OS (systemctl poweroff works directly via polkit)
+                self.get_logger().info("Executing system poweroff...")
+                os.system("systemctl poweroff || sudo poweroff || poweroff")
+        else:
+            if self.shutdown_start_time is not None and not self.is_shutting_down:
+                self.get_logger().info("[POWER] Shutdown canceled (buttons released or robot moved).")
+            self.shutdown_start_time = None
+            self.shutdown_countdown_sec = 0.0
+
+        # If shutting down, lock all wheel velocities to 0
+        if self.is_shutting_down:
+            linear_x = linear_y = angular_z = 0.0
 
         # Execute Mode Logic
         if self.current_mode == RobotMode.AUTO:
@@ -307,6 +363,21 @@ class MecanumJoyTeleop(Node):
         print(f"  Audio Status   : {'[ MUTED ]' if self.is_muted else '[ UNMUTED ]'}")
         print(f"  Photo Trigger  : {'* CLICK *' if photo_trigger else 'Ready    '}")
         print(f"  Speed Level    : [{speed_bars}{speed_spaces}] {speed_percent}%  (L1/R1 to Adjust)")
+        
+        # Display Hardware Shutdown State with diagnostic feedback
+        if self.is_shutting_down:
+            pwr_msg = "🛑 SHUTTING DOWN (Power off in 30s)"
+        elif self.shutdown_start_time is not None:
+            pwr_msg = f"⏳ HOLDING L1+R1... {self.shutdown_countdown_sec:.1f}s"
+        elif getattr(self, 'last_l1_held', False) and not getattr(self, 'last_r1_held', False):
+            pwr_msg = "L1 PRESSED (Also hold R1 to Shutdown)"
+        elif getattr(self, 'last_r1_held', False) and not getattr(self, 'last_l1_held', False):
+            pwr_msg = "R1 PRESSED (Also hold L1 to Shutdown)"
+        elif getattr(self, 'last_l1_held', False) and getattr(self, 'last_r1_held', False) and not getattr(self, 'last_is_stationary', False):
+            pwr_msg = "L1+R1 HELD BUT ROBOT MOVING (Stop sticks!)"
+        else:
+            pwr_msg = "READY (Hold L1+R1 5s to Shutdown)"
+        print(f"  Shutdown Timer : [ {pwr_msg} ]")
         print(f"-----------------------------------------")
         
         dir_str = "STOPPED     "
