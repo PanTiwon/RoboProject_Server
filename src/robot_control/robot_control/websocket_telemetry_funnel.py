@@ -31,7 +31,7 @@ class TelemetryNode(Node):
         self.declare_parameter('axis_backward', 2)
         self.declare_parameter('axis_strafe', 0)
         self.declare_parameter('axis_rotate', 3)
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        self.declare_parameter('serial_port', '/dev/ttyACM0')
         
         self.joy_x = 0.0
         self.joy_y = 0.0
@@ -130,7 +130,7 @@ class TelemetryNode(Node):
 
     def get_esp32_status(self):
         port = self.get_parameter('serial_port').value
-        if os.path.exists(port):
+        if os.path.exists(port) or os.path.exists('/dev/ttyACM0') or os.path.exists('/dev/ttyUSB0'):
             return "Online"
         return "Offline"
         

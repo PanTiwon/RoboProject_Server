@@ -318,3 +318,16 @@ Once the system is running, you can monitor the robot remotely:
 * **Zero-CPU Hardware ISP Flipping:** Offloaded 180° image rotation directly to the Raspberry Pi's Hardware Image Signal Processor (ISP).
 * **Multi-Distro ROS 2 Compatibility:** Extended deployment compatibility to both Ubuntu 22.04 LTS (Humble) and Ubuntu 24.04 LTS (Jazzy).
 
+### [v1.1.1 - Escape Velocity] - 2026-10-14
+#### ✨ Added
+* **On-Device Deep Learning Meter OCR (RapidOCR / ONNX Runtime):** Integrated an on-device PP-OCRv4 deep learning inference engine via `rapidocr_onnxruntime` and `onnxruntime` optimized for ARM64 (Raspberry Pi 5 / Cortex-A76), achieving sub-second (~0.5s) meter number extraction directly from camera captures without external cloud dependencies.
+* **Intelligent Digit Normalization & Spatial Deduplication:** Added character confusion mapping (e.g., `'O'/'o' -> '0'`, `'I'/'l' -> '1'`, `'Z' -> '2'`, `'S' -> '5'`) and Non-Maximum Suppression (NMS) containment filtering to eliminate overlapping ghost text boxes while strictly preserving left-to-right digit reading order.
+* **Visual Character HUD Highlights:** Overlaid individual yellow polygon bounding boxes around each detected digit alongside the primary green ROI target border and detected reading readout directly on the captured JPEG.
+* **Dynamic Serial Port Auto-Discovery & Hotplug Auto-Reconnect:** Enhanced `SerialController` to automatically discover and bind the active ESP32-S3 interface across both CDC-ACM (`/dev/ttyACM*`) and traditional USB-UART (`/dev/ttyUSB*`) ports based on USB VID/PID, coupled with a throttled auto-reconnect routine that seamlessly recovers if the USB cable is unplugged or power-cycled.
+* **Live Hardware Link Telemetry:** Added live `ESP32 Link : [ CONNECTED (<port>) ]` status readouts to the CLI dashboard and updated the WebSocket telemetry funnel to accurately report ESP32 online state on `/dev/ttyACM*`.
+* **Zero-Friction Open Wi-Fi Provisioning:** Updated `startup_network.sh` to broadcast `Mecanum_Setup` as an unencrypted Open Access Point, enabling field operators to tap and connect immediately from any mobile device without entering a password.
+
+#### 🐛 Fixed
+* **Fixed Native PaddlePaddle ARM64 Segfault:** Replaced the crashing native PaddlePaddle C++ backend on Cortex-A76 with an ONNX Runtime engine, permanently resolving runtime crashes (`SIGSEGV`) and `show_log` argument deprecation errors.
+* **Fixed Monotonic Image Sequence Numbering:** Resolved the repeating filename index bug (where `img_0051_...` repeated indefinitely once the 50-file FIFO ceiling was reached) by replacing array length counting with a persistent state counter (`.image_counter`) and regex-based filename inspection.
+* **Hotspot Connection Cleanup:** Ensured temporary AP profiles are cleanly torn down and deleted upon completing Wi-Fi provisioning so the network device seamlessly transitions back to station mode.

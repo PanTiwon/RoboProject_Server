@@ -12,6 +12,7 @@ Environment="PYTHONUNBUFFERED=1"
 ExecStart=/bin/bash /home/spark/ros2_ws/scripts/start_ros2.sh
 Restart=always
 RestartSec=5
+TimeoutStopSec=3
 
 [Install]
 WantedBy=multi-user.target

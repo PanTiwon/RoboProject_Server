@@ -4,6 +4,7 @@ import subprocess
 import threading
 import base64
 import time
+import re
 from datetime import datetime, timezone
 import cv2
 import firebase_admin
@@ -15,13 +16,28 @@ import logging
 import json
 import uuid
 
+# Deep Learning OCR Engine (RapidOCR ONNX Runtime with PaddleOCR fallback)
+try:
+    from rapidocr_onnxruntime import RapidOCR
+    HAS_RAPIDOCR = True
+except Exception:
+    RapidOCR = None
+    HAS_RAPIDOCR = False
+
+try:
+    from paddleocr import PaddleOCR
+    HAS_PADDLEOCR = True
+except Exception:
+    PaddleOCR = None
+    HAS_PADDLEOCR = False
+
 # ==========================================
 # SYSTEM CONFIGURATION: CHOOSE PROCESSING MODE
 # Options: 
 #   - "DIRECT_UPLOAD" : Capture -> Resize & Compress -> Base64 -> Upload to RTDB (Fallback / Safe mode)
-#   - "OPENCV_OCR"    : Capture -> OpenCV Preprocessing & OCR Pipeline -> Upload to RTDB (Semester 2 mode)
+#   - "OPENCV_OCR"    : Capture -> PaddleOCR Pipeline & Visualization -> Upload to RTDB (Active mode)
 # ==========================================
-DEFAULT_PROCESSING_MODE = "DIRECT_UPLOAD"
+DEFAULT_PROCESSING_MODE = "OPENCV_OCR"
 CAPTURE_COMMAND = "rpicam-still"
 
 # Video Settings
@@ -216,6 +232,7 @@ class CameraFirebaseManager:
         self.workspace_dir = os.path.expanduser("~/ros2_ws")
         self.images_dir = os.path.join(self.workspace_dir, "images")
         self.pending_file = os.path.join(self.workspace_dir, "pending_uploads.json")
+        self.counter_file = os.path.join(self.workspace_dir, ".image_counter")
         os.makedirs(self.images_dir, exist_ok=True)
         
         # State tracking
@@ -237,6 +254,33 @@ class CameraFirebaseManager:
         self.flask_thread.start()
 
         self._init_firebase()
+
+        # Initialize Deep Learning OCR Engine (Loaded once at startup)
+        self.ocr_reader = None
+        self.ocr_engine_type = None
+
+        if HAS_RAPIDOCR and RapidOCR is not None:
+            try:
+                self._log_info("Loading RapidOCR (ONNX Runtime Deep Learning engine)...")
+                self.ocr_reader = RapidOCR()
+                self.ocr_engine_type = "RAPIDOCR"
+                self._log_info("RapidOCR model loaded successfully.")
+            except Exception as e:
+                self._log_error(f"Failed to initialize RapidOCR: {e}")
+                self.ocr_reader = None
+
+        if self.ocr_reader is None and HAS_PADDLEOCR and PaddleOCR is not None:
+            try:
+                self._log_info("Loading PaddleOCR fallback model...")
+                self.ocr_reader = PaddleOCR(use_angle_cls=False, lang='en')
+                self.ocr_engine_type = "PADDLEOCR"
+                self._log_info("PaddleOCR model loaded successfully.")
+            except Exception as e:
+                self._log_error(f"Failed to initialize PaddleOCR: {e}")
+                self.ocr_reader = None
+
+        if self.ocr_reader is None:
+            self._log_info("No Deep Learning OCR engine available. Running in MOCK_1234 mode.")
 
         # Start offline sync worker
         self.sync_thread = threading.Thread(target=self._sync_worker, daemon=True)
@@ -268,9 +312,10 @@ class CameraFirebaseManager:
                 payload["record_id"] = record_id
 
             try:
-                self._log_info(f"Attempting offline sync for record {record_id}...")
+                reading_val = payload.get("meter_reading", "N/A")
+                self._log_info(f"Attempting offline sync for record {record_id} (meter_reading: {reading_val})...")
                 db.reference(f'/meter_records/{record_id}').set(payload)
-                self._log_info(f"Offline sync successful for {record_id}")
+                self._log_info(f"Offline sync successful for {record_id} (meter_reading: {reading_val})")
                 
                 # Remove from queue and save
                 with self._upload_lock:
@@ -386,6 +431,39 @@ class CameraFirebaseManager:
         except Exception as e:
             self._log_error(f"Failed to initialize Firebase: {e}")
 
+    def _get_next_image_index(self):
+        """
+        Determines the next incremental image index.
+        Uses both existing files and a persistent state file to guarantee
+        strictly monotonic incrementing sequence (0001, 0002, ..., 0051, 0052, ...),
+        even after older files are rotated/deleted by manage_local_storage.
+        """
+        current_counter = 0
+        if os.path.exists(self.counter_file):
+            try:
+                with open(self.counter_file, 'r') as f:
+                    current_counter = int(f.read().strip())
+            except Exception:
+                current_counter = 0
+
+        max_in_files = 0
+        search_pattern = os.path.join(self.images_dir, "img_*.jpg")
+        for f in glob.glob(search_pattern):
+            basename = os.path.basename(f)
+            match = re.match(r"img_(\d+)_", basename)
+            if match:
+                max_in_files = max(max_in_files, int(match.group(1)))
+
+        next_index = max(current_counter, max_in_files) + 1
+
+        try:
+            with open(self.counter_file, 'w') as f:
+                f.write(str(next_index))
+        except Exception as e:
+            self._log_error(f"Failed to persist image counter: {e}")
+
+        return next_index
+
     def manage_local_storage(self):
         try:
             search_pattern = os.path.join(self.images_dir, "*.jpg")
@@ -410,15 +488,141 @@ class CameraFirebaseManager:
         thread = threading.Thread(target=self._capture_and_upload_worker, args=(pitch_angle,), daemon=True)
         thread.start()
 
+    def capture_and_upload(self, pitch_angle=0.0):
+        """Public alias for capture_and_upload_task."""
+        return self.capture_and_upload_task(pitch_angle)
+
     def _process_image_ocr(self, cv_image):
-        """Semester 2 Pipeline Stub"""
-        self._log_info("Running OPENCV_OCR pipeline...")
-        gray = cv2.cvtColor(cv_image, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        processed_image = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
-        detected_reading_str = "MOCK_OCR_1234.5"
-        return processed_image, detected_reading_str
+        """
+        On-device Deep Learning OCR Pipeline using RapidOCR (ONNX Runtime).
+        Extracts numbers/digits from the center Region of Interest (ROI),
+        annotates the image with a visual HUD bounding box and detected digits,
+        and returns the annotated image and detected digits string.
+        """
+        self._log_info("Running on-device OCR pipeline...")
+        h, w = cv_image.shape[:2]
+
+        # 1. Crop Region of Interest (ROI) - Centered bounding box where camera HUD crosshair aims
+        # Designed for the meter box (4 digits under REAI header or real analog rolling counters)
+        roi_w = int(w * 0.45)
+        roi_h = int(h * 0.35)
+        start_x = (w - roi_w) // 2
+        start_y = (h - roi_h) // 2
+        roi = cv_image[start_y:start_y + roi_h, start_x:start_x + roi_w]
+
+        detected_number_str = ""
+        extracted_digits_list = []
+        valid_detected_boxes = []
+
+        # 2. Run inference with RapidOCR / PaddleOCR
+        if self.ocr_reader is not None:
+            try:
+                raw_boxes = []
+                if self.ocr_engine_type == "RAPIDOCR":
+                    ocr_result, elapse = self.ocr_reader(roi)
+                    if ocr_result:
+                        for box, text, score in ocr_result:
+                            raw_boxes.append((box, text, score))
+                elif self.ocr_engine_type == "PADDLEOCR":
+                    ocr_result = self.ocr_reader.ocr(roi, cls=False)
+                    if ocr_result and len(ocr_result) > 0:
+                        lines = ocr_result[0] if (isinstance(ocr_result, list) and len(ocr_result) > 0 and isinstance(ocr_result[0], list)) else ocr_result
+                        if lines:
+                            for item in lines:
+                                if item and len(item) >= 2 and isinstance(item[1], (tuple, list)):
+                                    raw_boxes.append((item[0], item[1][0], item[1][1]))
+
+                # Parse and compute bounding boxes
+                parsed_boxes = []
+                for box, text, score in raw_boxes:
+                    xs = [p[0] for p in box]
+                    ys = [p[1] for p in box]
+                    xmin, xmax = min(xs), max(xs)
+                    ymin, ymax = min(ys), max(ys)
+                    parsed_boxes.append({
+                        'box': box, 'text': str(text).strip(), 'score': float(score),
+                        'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax
+                    })
+
+                # Suppression / containment filter:
+                # If a smaller box is largely inside a larger box with higher score, suppress the smaller box
+                filtered_boxes = []
+                for i, b1 in enumerate(parsed_boxes):
+                    is_contained = False
+                    for j, b2 in enumerate(parsed_boxes):
+                        if i != j:
+                            if b1['xmin'] >= b2['xmin'] - 20 and b1['xmax'] <= b2['xmax'] + 20 and b1['score'] < b2['score']:
+                                is_contained = True
+                                break
+                    if not is_contained:
+                        filtered_boxes.append(b1)
+
+                # Sort left to right by xmin for proper reading order
+                filtered_boxes.sort(key=lambda b: b['xmin'])
+
+                # Character normalization for digits (common OCR confusions in meter reading)
+                digit_map = {'O': '0', 'o': '0', 'D': '0', 'I': '1', 'l': '1', 'i': '1', 'Z': '2', 'z': '2', 'S': '5', 's': '5', 'B': '8', 'b': '6'}
+
+                for b in filtered_boxes:
+                    raw_text = b['text']
+                    # Skip English header labels like 'REAI', 'WATER', etc.
+                    invalid_chars = [c for c in raw_text if c.isalpha() and c not in digit_map]
+                    if len(invalid_chars) > 0 and len(raw_text) > 2:
+                        continue
+
+                    converted = ''.join(digit_map.get(c, c) for c in raw_text)
+                    digits = re.sub(r'\D', '', converted)
+                    if digits:
+                        extracted_digits_list.append(digits)
+                        valid_detected_boxes.append(b)
+
+                if extracted_digits_list:
+                    detected_number_str = "".join(extracted_digits_list)
+                    self._log_info(f"✅ OCR Success: {detected_number_str}")
+                else:
+                    self._log_info("OCR ran successfully but no digits found in ROI.")
+                    detected_number_str = "NOT_DETECTED"
+            except Exception as e:
+                self._log_error(f"Error during OCR inference: {e}. Falling back to MOCK_1234.")
+                detected_number_str = "MOCK_1234"
+        else:
+            self._log_info("OCR engine not active. Using fallback reading: MOCK_1234")
+            detected_number_str = "MOCK_1234"
+
+        # 3. Visual Annotation on Image: Draw bounding box & text overlay
+        annotated_image = cv_image.copy()
+
+        # Box Color: Green for successful detection, Cyan/Yellow for fallback, Red for not detected
+        if detected_number_str not in ("NOT_DETECTED", "MOCK_1234"):
+            box_color = (0, 255, 0) # Green
+        elif detected_number_str == "MOCK_1234":
+            box_color = (0, 200, 255) # Yellow/Cyan
+        else:
+            box_color = (0, 0, 255) # Red
+
+        # Draw ROI target border
+        cv2.rectangle(annotated_image, (start_x, start_y), (start_x + roi_w, start_y + roi_h), box_color, 4)
+
+        # Draw individual detected character/box highlights inside ROI
+        for b in valid_detected_boxes:
+            box_pts = b['box']
+            pts = np.array([[int(p[0] + start_x), int(p[1] + start_y)] for p in box_pts], np.int32)
+            pts = pts.reshape((-1, 1, 2))
+            cv2.polylines(annotated_image, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+
+        # Draw HUD Label on top of the ROI box
+        label_text = f"METER READING: {detected_number_str}"
+        font_scale = max(0.8, w / 2200.0 * 1.3)
+        thickness = max(2, int(font_scale * 2))
+
+        (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        text_bg_y1 = max(0, start_y - text_h - 18)
+        text_bg_y2 = start_y
+        cv2.rectangle(annotated_image, (start_x, text_bg_y1), (start_x + text_w + 20, text_bg_y2), (0, 0, 0), -1)
+        cv2.putText(annotated_image, label_text, (start_x + 10, start_y - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, box_color, thickness, cv2.LINE_AA)
+
+        return annotated_image, detected_number_str
 
     def _capture_and_upload_worker(self, pitch_angle):
         """Blocking workload executed in the background thread."""
@@ -449,8 +653,7 @@ class CameraFirebaseManager:
             timestamp_str_file = timestamp_dt.strftime("%Y%m%d_%H%M%S")
             iso_timestamp = timestamp_dt.isoformat()
 
-            existing_files = glob.glob(os.path.join(self.images_dir, "*.jpg"))
-            index = len(existing_files) + 1
+            index = self._get_next_image_index()
             filename = f"img_{index:04d}_{timestamp_str_file}.jpg"
             filepath = os.path.join(self.images_dir, filename)
 
@@ -489,6 +692,11 @@ class CameraFirebaseManager:
             else:
                 meter_reading = "DIRECT_MODE"
 
+            if meter_reading and meter_reading not in ("NOT_DETECTED", "DIRECT_MODE", "MOCK_1234"):
+                self._log_info(f"✅ OCR Success: {meter_reading}")
+            else:
+                self._log_info(f"OCR Mode '{self.processing_mode}' output: {meter_reading}")
+
             # 4. Resize and Compress
             max_dim = 800
             h, w = img.shape[:2]
@@ -521,6 +729,7 @@ class CameraFirebaseManager:
                 "record_id": record_id,
                 "filename": filename,
                 "image_base64": data_uri,
+                "image_data": data_uri,
                 "timestamp": iso_timestamp,
                 "meter_reading": meter_reading,
                 "meter_type": meter_type
@@ -529,7 +738,7 @@ class CameraFirebaseManager:
             try:
                 db.reference(f'/meter_records/{record_id}').set(payload)
                 self.last_capture_time = time.time()
-                self._log_info(f"Successfully pushed to RTDB! Record ID: {record_id} | Mode: {self.processing_mode}")
+                self._log_info(f"Successfully pushed to RTDB! Record ID: {record_id} | Reading: {meter_reading} | Mode: {self.processing_mode}")
             except Exception as e:
                 self._log_error(f"Upload failed: {e}. Queuing for offline sync.")
                 self.last_capture_time = time.time()

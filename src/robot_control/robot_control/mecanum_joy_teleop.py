@@ -80,7 +80,7 @@ class MecanumJoyTeleop(Node):
         self.declare_parameter('btn_speed_up', 5) # R1 (Right Bumper)
         
         # Serial parameters
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        self.declare_parameter('serial_port', '/dev/ttyACM0')
         self.declare_parameter('serial_baudrate', 115200)
         self.declare_parameter('max_speed', 255.0)
         
@@ -275,13 +275,17 @@ class MecanumJoyTeleop(Node):
                 # 1) Stop all motors immediately
                 self.serial_ctrl.send_command([0, 0, 0, 0], False, self.yaw_angle, self.pitch_angle)
 
-                # 2) Command Waveshare UPS HAT via I2C (Address 0x2d) to cut 5V power in 30 seconds
-                self.get_logger().info("Sending I2C cut-off command to Waveshare UPS HAT (0x2d)...")
-                os.system("i2cset -y 1 0x2d 0x01 0x55 || sudo i2cset -y 1 0x2d 0x01 0x55")
+                # 2) Flush filesystem buffers to disk immediately
+                self.get_logger().info("Flushing file system buffers (sync)...")
+                os.system("sync")
 
-                # 3) Gracefully power off the Ubuntu OS (systemctl poweroff works directly via polkit)
+                # 3) Command Waveshare UPS HAT via I2C (Address 0x2d) to cut 5V power in 30 seconds
+                self.get_logger().info("Sending I2C cut-off command to Waveshare UPS HAT (0x2d)...")
+                os.system("sudo i2cset -y 1 0x2d 0x01 0x55 || i2cset -y 1 0x2d 0x01 0x55")
+
+                # 4) Gracefully power off the Ubuntu OS
                 self.get_logger().info("Executing system poweroff...")
-                os.system("systemctl poweroff || sudo poweroff || poweroff")
+                os.system("sudo poweroff || sudo systemctl poweroff || systemctl poweroff")
         else:
             if self.shutdown_start_time is not None and not self.is_shutting_down:
                 self.get_logger().info("[POWER] Shutdown canceled (buttons released or robot moved).")
@@ -355,6 +359,8 @@ class MecanumJoyTeleop(Node):
         print(f"      MECANUM DASHBOARD : {mode_str}      ")
         print(f"=========================================")
         
+        link_str = f"[ CONNECTED ({self.serial_ctrl.port}) ]" if self.serial_ctrl.is_connected() else "[ DISCONNECTED ]"
+        print(f"  ESP32 Link     : {link_str}")
         bat_str = f"{self.battery_percent}%" if self.battery_percent >= 0 else "WAITING..."
         print(f"  Battery Level  : [ {bat_str} ]")
         print(f"  Vacuum Status : {'[ ON ] ' if self.vacuum_active else '[ OFF ]'}")

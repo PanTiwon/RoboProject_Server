@@ -22,3 +22,9 @@ psutil>=5.9.0
 
 # Numpy for image processing logic
 numpy>=1.21.0
+
+# Deep Learning OCR Engine (On-device Meter Reading via ONNX Runtime / RapidOCR)
+rapidocr_onnxruntime>=1.3.0
+onnxruntime>=1.15.0
+paddleocr
+

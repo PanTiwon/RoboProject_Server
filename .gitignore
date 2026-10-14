@@ -43,6 +43,7 @@ images/
 
 # Runtime / Offline Data & Credentials
 pending_uploads.json
+.image_counter
 *firebase*.json
 *credentials*.json
 *.key
