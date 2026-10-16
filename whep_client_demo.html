@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Robot FPV Stream - WebRTC (WHEP)</title>
+  <style>
+    :root {
+      --bg-color: #0b0f19;
+      --card-bg: rgba(18, 24, 38, 0.85);
+      --accent: #00f0ff;
+      --accent-glow: rgba(0, 240, 255, 0.35);
+      --success: #00ff88;
+      --warning: #ffb700;
+      --danger: #ff0055;
+      --text: #f0f4fc;
+      --text-muted: #8a99ad;
+      --hud-green: rgba(0, 255, 136, 0.85);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-color);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .container {
+      position: relative;
+      width: 95vw;
+      max-width: 1280px;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 20px var(--accent-glow);
+      border: 1px solid rgba(0, 240, 255, 0.2);
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
+      display: block;
+    }
+
+    /* HUD Top Bar */
+    .hud-header {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      right: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      backdrop-filter: blur(8px);
+      background: var(--card-bg);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--warning);
+      box-shadow: 0 0 10px var(--warning);
+      animation: pulse 1.5s infinite;
+    }
+
+    .badge.connected .status-dot {
+      background: var(--success);
+      box-shadow: 0 0 10px var(--success);
+    }
+
+    .badge.disconnected .status-dot {
+      background: var(--danger);
+      box-shadow: 0 0 10px var(--danger);
+    }
+
+    .telemetry {
+      font-size: 13px;
+      font-family: monospace;
+      color: var(--text-muted);
+      background: var(--card-bg);
+      padding: 6px 14px;
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(8px);
+    }
+
+    /* HUD Guidelines & Reticle Overlay */
+    .hud-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 5;
+    }
+
+    .reticle {
+      width: 50px;
+      height: 50px;
+      border: 1.5px solid var(--hud-green);
+      border-radius: 50%;
+      position: relative;
+    }
+
+    .reticle::before, .reticle::after {
+      content: '';
+      position: absolute;
+      background: var(--hud-green);
+    }
+
+    .reticle::before {
+      top: 50%;
+      left: -25px;
+      width: 100px;
+      height: 1.5px;
+      transform: translateY(-50%);
+    }
+
+    .reticle::after {
+      left: 50%;
+      top: -25px;
+      height: 100px;
+      width: 1.5px;
+      transform: translateX(-50%);
+    }
+
+    /* Bottom Status Bar */
+    .hud-footer {
+      position: absolute;
+      bottom: 16px;
+      left: 16px;
+      right: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: auto;
+      z-index: 10;
+    }
+
+    .controls-btn {
+      background: rgba(0, 240, 255, 0.15);
+      color: var(--accent);
+      border: 1px solid var(--accent);
+      padding: 8px 18px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: all 0.2s ease;
+      backdrop-filter: blur(8px);
+    }
+
+    .controls-btn:hover {
+      background: var(--accent);
+      color: #000;
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Native Video Element for WebRTC Stream -->
+    <video id="fpv_stream" autoplay playsinline muted></video>
+
+    <!-- HUD Header -->
+    <div class="hud-header">
+      <div id="status_badge" class="badge">
+        <span class="status-dot"></span>
+        <span id="status_text">INITIALIZING...</span>
+      </div>
+      <div class="telemetry">
+        <span id="stream_info">H.264 | 1280x720 | 30 FPS</span>
+      </div>
+    </div>
+
+    <!-- HUD Overlay Target Reticle -->
+    <div class="hud-overlay">
+      <div class="reticle"></div>
+    </div>
+
+    <!-- HUD Footer Controls -->
+    <div class="hud-footer">
+      <div class="telemetry" id="whep_url_label">
+        WHEP Endpoint: <span id="endpoint_display">Loading...</span>
+      </div>
+      <button class="controls-btn" id="reconnect_btn" onclick="whepClient.restart()">Reconnect Stream</button>
+    </div>
+  </div>
+
+  <script>
+    /**
+     * Production-Ready Native WebRTC WHEP Client
+     * Communicates with MediaMTX via WebRTC HTTP Egress Protocol (WHEP)
+     * Features: Auto-reconnect, ICE state handling, and zero external dependencies.
+     */
+    class WhepClient {
+      constructor(videoElement, endpointUrl) {
+        this.videoElement = videoElement;
+        this.endpointUrl = endpointUrl;
+        this.pc = null;
+        this.reconnectTimer = null;
+        this.isExplicitlyStopped = false;
+        this.statusBadge = document.getElementById('status_badge');
+        this.statusText = document.getElementById('status_text');
+      }
+
+      updateStatus(state, message) {
+        if (!this.statusBadge || !this.statusText) return;
+        this.statusBadge.className = `badge ${state}`;
+        this.statusText.innerText = message;
+      }
+
+      async start() {
+        this.isExplicitlyStopped = false;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+
+        if (this.pc) {
+          this.pc.close();
+          this.pc = null;
+        }
+
+        this.updateStatus('connecting', 'CONNECTING TO WEBRTC...');
+        console.log(`[WHEP] Starting connection to: ${this.endpointUrl}`);
+
+        try {
+          // 1. Initialize PeerConnection with standard STUN (Local ICE candidates prioritized on LAN)
+          this.pc = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' }
+            ],
+            bundlePolicy: 'max-bundle'
+          });
+
+          // 2. Request video track from the remote MediaMTX broker (recvonly)
+          this.pc.addTransceiver('video', { direction: 'recvonly' });
+
+          // 3. Attach incoming MediaStream to HTML5 video element
+          this.pc.ontrack = (event) => {
+            console.log('[WHEP] Track received:', event.track.kind);
+            if (event.streams && event.streams[0]) {
+              this.videoElement.srcObject = event.streams[0];
+            } else {
+              this.videoElement.srcObject = new MediaStream([event.track]);
+            }
+            this.updateStatus('connected', '● WEBRTC LIVE');
+          };
+
+          // 4. Handle ICE and connection state transitions (Auto-reconnect)
+          this.pc.onconnectionstatechange = () => {
+            const state = this.pc.connectionState;
+            console.log(`[WHEP] RTCPeerConnection state: ${state}`);
+            if (state === 'connected') {
+              this.updateStatus('connected', '● WEBRTC LIVE');
+            } else if (['disconnected', 'failed', 'closed'].includes(state)) {
+              this.updateStatus('disconnected', 'STREAM DISCONNECTED');
+              this.scheduleReconnect(1500);
+            }
+          };
+
+          // 5. Generate Local SDP Offer
+          const offer = await this.pc.createOffer();
+          await this.pc.setLocalDescription(offer);
+
+          // Wait for candidate gathering to bundle candidates into initial SDP offer
+          await this.waitForIceGathering();
+
+          // 6. POST SDP Offer to WHEP Endpoint
+          const response = await fetch(this.endpointUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/sdp'
+            },
+            body: this.pc.localDescription.sdp
+          });
+
+          if (!response.ok) {
+            throw new Error(`WHEP endpoint returned HTTP ${response.status} (${response.statusText})`);
+          }
+
+          // 7. Receive and apply Remote SDP Answer
+          const answerSdp = await response.text();
+          await this.pc.setRemoteDescription({
+            type: 'answer',
+            sdp: answerSdp
+          });
+
+          console.log('✅ [WHEP] WebRTC Session Established Successfully!');
+
+        } catch (err) {
+          console.warn(`[WHEP] Handshake error: ${err.message}. Retrying in 2s...`);
+          this.updateStatus('disconnected', 'RECONNECTING...');
+          this.scheduleReconnect(2000);
+        }
+      }
+
+      waitForIceGathering() {
+        return new Promise((resolve) => {
+          if (this.pc.iceGatheringState === 'complete') {
+            resolve();
+          } else {
+            const checkState = () => {
+              if (this.pc.iceGatheringState === 'complete') {
+                this.pc.removeEventListener('icegatheringstatechange', checkState);
+                resolve();
+              }
+            };
+            this.pc.addEventListener('icegatheringstatechange', checkState);
+            // Safety timeout: don't block forever if STUN is slow
+            setTimeout(resolve, 800);
+          }
+        });
+      }
+
+      scheduleReconnect(delayMs = 2000) {
+        if (this.isExplicitlyStopped || this.reconnectTimer) return;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          this.start();
+        }, delayMs);
+      }
+
+      restart() {
+        this.start();
+      }
+
+      stop() {
+        this.isExplicitlyStopped = true;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        if (this.pc) {
+          this.pc.close();
+          this.pc = null;
+        }
+        if (this.videoElement) {
+          this.videoElement.srcObject = null;
+        }
+        this.updateStatus('disconnected', 'STREAM STOPPED');
+      }
+    }
+
+    // Initialize WHEP Client pointing to MediaMTX on port 8889
+    const hostname = window.location.hostname || '127.0.0.1';
+    const whepEndpoint = `http://${hostname}:8889/live/whep`;
+
+    document.getElementById('endpoint_display').innerText = whepEndpoint;
+
+    const videoEl = document.getElementById('fpv_stream');
+    const whepClient = new WhepClient(videoEl, whepEndpoint);
+
+    // Auto-start playback on page load
+    window.addEventListener('DOMContentLoaded', () => {
+      whepClient.start();
+    });
+  </script>
+</body>
+</html>

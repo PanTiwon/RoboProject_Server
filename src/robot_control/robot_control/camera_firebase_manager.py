@@ -7,11 +7,12 @@ import time
 import re
 from datetime import datetime, timezone
 import cv2
+import numpy as np
 import firebase_admin
 from firebase_admin import credentials, initialize_app, db
 
-# Flask imports for MJPEG Stream
-from flask import Flask, Response, render_template_string
+# Flask imports for WebRTC FPV dashboard
+from flask import Flask, Response, render_template_string, request
 import logging
 import json
 import uuid
@@ -40,6 +41,24 @@ except Exception:
 DEFAULT_PROCESSING_MODE = "OPENCV_OCR"
 CAPTURE_COMMAND = "rpicam-still"
 
+# ==========================================
+# CAPTURE MODE CONFIGURATION (Dual Capture Mode)
+# Options:
+#   - "STREAM_GRAB"    : Instant / Zero-Downtime mode. Grabs current 720p frame directly from active
+#                        MediaMTX RTSP stream (rtsp://127.0.0.1:8554/live) without pausing or stopping
+#                        the WebRTC FPV stream. FPV screen stays 100% continuous without blackouts.
+#   - "HARDWARE_STILL" : High-Res Turbo mode. Pauses MediaMTX briefly (150ms buffer), triggers
+#                        rpicam-still with 600ms timeout, immediately re-launches MediaMTX (< 1s total),
+#                        and performs OCR & Firebase upload in the background.
+# ==========================================
+DEFAULT_CAPTURE_MODE = "STREAM_GRAB"
+
+# Multi-Meter Detection Toggle (HSV + RapidOCR)
+# True  : Automatically detects multiple blue meter boxes (left-to-right) via HSV.
+#         If 0 boxes are found, it seamlessly falls back to Fixed Center ROI.
+# False : Always uses classic Fixed Center ROI.
+ENABLE_MULTI_METER_DETECTION = True
+
 # Video Settings
 FLIP_VIDEO = True
 SHOW_GUIDELINE = True
@@ -55,167 +74,40 @@ _global_camera_manager = None
 
 @app.route('/')
 def index():
+    html_file = os.path.expanduser('~/ros2_ws/whep_client_demo.html')
+    if os.path.exists(html_file):
+        with open(html_file, 'r', encoding='utf-8') as f:
+            return f.read()
     return render_template_string('''
         <html>
-          <head>
-            <title>Robot FPV Live Stream</title>
-            <style>
-              body { background-color: #000; margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
-              /* Make image fill screen while keeping aspect ratio (contain) or filling completely (cover) */
-              img { width: 100vw; height: 100vh; object-fit: contain; }
-            </style>
-          </head>
-          <body>
-            <img src="{{ url_for('video_feed') }}">
+          <head><title>Robot FPV WebRTC</title></head>
+          <body style="background:#0b0f19;color:#fff;display:flex;justify-content:center;align-items:center;height:100vh;font-family:sans-serif;">
+            <div style="text-align:center;">
+              <h2>WebRTC Stream Broker (MediaMTX)</h2>
+              <p>Direct Player: <a style="color:#00f0ff;" href="http://{{ request.host.split(':')[0] }}:8889/live">http://{{ request.host.split(':')[0] }}:8889/live</a></p>
+              <p>WHEP Endpoint: <code style="color:#00ff88;">http://{{ request.host.split(':')[0] }}:8889/live/whep</code></p>
+            </div>
           </body>
         </html>
     ''')
 
-_latest_frame = None
-_frame_cond = threading.Condition()
-
-def stream_reader_thread():
-    global _global_camera_manager
-    global _latest_frame
-    buffer = b''
-    while True:
-        if _global_camera_manager is None or not _global_camera_manager.is_streaming:
-            time.sleep(0.1)
-            continue
-            
-        proc = _global_camera_manager.stream_process
-        if proc is None or proc.stdout is None:
-            time.sleep(0.1)
-            continue
-            
-        try:
-            while _global_camera_manager.is_streaming and proc == _global_camera_manager.stream_process:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
-                    break
-                buffer += chunk
-                
-                while True:
-                    a = buffer.find(b'\xff\xd8')
-                    b = buffer.find(b'\xff\xd9')
-                    if a != -1 and b != -1:
-                        if b < a:
-                            buffer = buffer[b+2:]
-                        else:
-                            jpg = buffer[a:b+2]
-                            buffer = buffer[b+2:]
-                            with _frame_cond:
-                                _latest_frame = jpg
-                                _frame_cond.notify_all()
-                    else:
-                        break
-        except Exception:
-            pass
-
-threading.Thread(target=stream_reader_thread, daemon=True).start()
-
-import numpy as np
-
-def generate_frames():
-    global _latest_frame, _global_camera_manager
-    while True:
-        with _frame_cond:
-            _frame_cond.wait(timeout=0.1)
-            frame_bytes = _latest_frame
-            
-        if frame_bytes is not None:
-            # OPTIMIZATION: Only decode/encode if we need to draw/flip
-            needs_processing = SHOW_GUIDELINE or (_global_camera_manager is not None and (time.time() - _global_camera_manager.last_capture_time < 2.0))
-            
-            if needs_processing:
-                np_arr = np.frombuffer(frame_bytes, np.uint8)
-                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                
-                if img is not None:
-                    h, w = img.shape[:2]
-                    
-                    if SHOW_GUIDELINE:
-                        cx, cy = w // 2, h // 2
-                        
-                        # Modern crosshair
-                        cv2.circle(img, (cx, cy), 4, (0, 255, 0), -1)
-                        cv2.circle(img, (cx, cy), 30, (0, 255, 0), 2)
-                        cv2.line(img, (cx - 45, cy), (cx - 15, cy), (0, 255, 0), 2)
-                        cv2.line(img, (cx + 15, cy), (cx + 45, cy), (0, 255, 0), 2)
-                        cv2.line(img, (cx, cy - 45), (cx, cy - 15), (0, 255, 0), 2)
-                        cv2.line(img, (cx, cy + 15), (cx, cy + 45), (0, 255, 0), 2)
-
-                        # Perspective Guidelines (Parking style)
-                        bx1, bx2 = int(w * 0.25), int(w * 0.75) # Bottom width
-                        tx1, tx2 = int(w * 0.40), int(w * 0.60) # Top width
-                        by = h
-                        ty = int(h * 0.6)
-
-                        # Draw side trajectory lines
-                        cv2.line(img, (bx1, by), (tx1, ty), (0, 165, 255), 3)
-                        cv2.line(img, (bx2, by), (tx2, ty), (0, 165, 255), 3)
-                        
-                        # Distance markers [ratio (0=bottom, 1=top), distance_str, color]
-                        distances = [
-                            (0.0,  "0cm",  (0, 0, 255)),       # Red
-                            (0.33, "20cm", (0, 255, 255)),     # Yellow
-                            (0.66, "40cm", (0, 255, 255)),     # Yellow
-                            (1.0,  "60cm", (0, 255, 0))        # Green
-                        ]
-                        
-                        for ratio, dist_str, color in distances:
-                            curr_y = int(by - ratio * (by - ty))
-                            curr_x1 = int(bx1 + ratio * (tx1 - bx1))
-                            curr_x2 = int(bx2 - ratio * (bx2 - tx2))
-                            
-                            # Draw horizontal segment
-                            cv2.line(img, (curr_x1, curr_y), (curr_x2, curr_y), color, 2)
-                            # Draw distance text
-                            cv2.putText(img, dist_str, (curr_x2 + 15, curr_y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-
-                    if _global_camera_manager:
-                        # Draw UI Header Bar
-                        cv2.rectangle(img, (0, 0), (w, 40), (0, 0, 0), -1)
-                        
-                        # Draw Telemetry (Angles)
-                        yaw = _global_camera_manager.current_yaw
-                        pitch = _global_camera_manager.current_pitch
-                        ui_text = f"SYS: ONLINE  |  PAN (YAW): {yaw:>3}  |  TILT (PITCH): {pitch:>3}"
-                        cv2.putText(img, ui_text, (15, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        
-                        # Draw Photo Taken notification (Animated Flash)
-                        time_since_cap = time.time() - _global_camera_manager.last_capture_time
-                        if time_since_cap < 2.0:
-                            if int(time_since_cap * 5) % 2 == 0:
-                                cv2.rectangle(img, (0, 0), (w-1, h-1), (255, 255, 255), 8) # White flash border
-                            
-                            text = ">> PHOTO CAPTURED <<"
-                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
-                            text_x = (w - text_size[0]) // 2
-                            text_y = h // 2 - 120
-                            
-                            cv2.rectangle(img, (text_x - 15, text_y - 35), (text_x + text_size[0] + 15, text_y + 15), (0, 0, 0), -1)
-                            cv2.putText(img, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
-
-                    # Encode back to JPEG (lower quality for stream to save CPU)
-                    encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 65]
-                    success, buffer = cv2.imencode('.jpg', img, encode_param)
-                    if success:
-                        frame_bytes = buffer.tobytes()
-
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(
+        "Stream migrated to WebRTC WHEP. Connect to http://<pi_ip>:8889/live or http://<pi_ip>:5000",
+        mimetype='text/plain',
+        status=200
+    )
 # --------------------------
+
 
 
 class CameraFirebaseManager:
     def __init__(self, cred_path="/home/spark/firebase_key.json", 
                  database_url="https://roboproject1-a9c63-default-rtdb.asia-southeast1.firebasedatabase.app/",
                  processing_mode=DEFAULT_PROCESSING_MODE,
+                 capture_mode=DEFAULT_CAPTURE_MODE,
+                 enable_multi_meter=ENABLE_MULTI_METER_DETECTION,
                  logger=None):
         """
         Initializes the Camera, Flask Streamer, and Firebase Manager using RTDB.
@@ -227,6 +119,9 @@ class CameraFirebaseManager:
         self.cred_path = cred_path
         self.database_url = database_url
         self.processing_mode = processing_mode
+        self.capture_mode = capture_mode
+        self.enable_multi_meter = enable_multi_meter
+
         self.max_images = 50
         
         self.workspace_dir = os.path.expanduser("~/ros2_ws")
@@ -357,26 +252,15 @@ class CameraFirebaseManager:
             self._log_error(f"Flask Server Failed: {e}")
 
     def _start_vid_process(self):
-        """Starts the rpicam-vid subprocess for MJPEG streaming."""
-        vid_cmd = CAPTURE_COMMAND.replace('still', 'vid')
-        cmd = [
-            vid_cmd,
-            "-n", # Disable preview window to prevent crash on headless
-            "-t", "0",
-            "--codec", "mjpeg",
-            "--width", "640",
-            "--height", "480",
-            "--framerate", "25",
-            "--inline",
-            "-o", "-" # Output to stdout
-        ]
-        if FLIP_VIDEO:
-            cmd.extend(["--hflip", "--vflip"])
-        self._log_info(f"Starting native video stream: {vid_cmd}")
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        """Starts the MediaMTX subprocess for native WebRTC H.264 streaming with Continuous Autofocus."""
+        mediamtx_bin = "/home/spark/mediamtx/mediamtx"
+        mediamtx_cfg = "/home/spark/mediamtx/mediamtx.yml"
+        cmd = [mediamtx_bin, mediamtx_cfg]
+        self._log_info("Starting MediaMTX WebRTC server (WHEP at :8889/live/whep)...")
+        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def toggle_stream(self):
-        """Toggles the Subprocess MJPEG stream ON/OFF, managing the camera resource."""
+        """Toggles the MediaMTX WebRTC stream ON/OFF, managing the camera resource."""
         with self._camera_lock:
             if self.is_streaming:
                 # Turn OFF
@@ -384,13 +268,13 @@ class CameraFirebaseManager:
                 if self.stream_process:
                     self.stream_process.terminate()
                     try:
-                        self.stream_process.wait(timeout=0.5)
+                        self.stream_process.wait(timeout=1.0)
                     except subprocess.TimeoutExpired:
-                        self._log_info("Stream process ignored SIGTERM, forcing SIGKILL.")
+                        self._log_info("MediaMTX ignored SIGTERM, forcing SIGKILL.")
                         self.stream_process.kill()
                         self.stream_process.wait()
                     self.stream_process = None
-                self._log_info("FPV Stream toggled OFF. Camera Released.")
+                self._log_info("FPV WebRTC Stream toggled OFF. Camera Released.")
             else:
                 # Turn ON (Check if capture is currently holding the camera)
                 if self._is_capturing:
@@ -400,12 +284,13 @@ class CameraFirebaseManager:
                 try:
                     self.stream_process = self._start_vid_process()
                     self.is_streaming = True
-                    self._log_info("FPV Stream toggled ON. Watch at http://<pi_ip>:5000")
+                    self._log_info("FPV WebRTC Stream toggled ON. Watch at http://<pi_ip>:8889/live or http://<pi_ip>:5000")
                 except Exception as e:
-                    self._log_error(f"Failed to start video process: {e}")
+                    self._log_error(f"Failed to start MediaMTX stream process: {e}")
                     return False
         
         return self.is_streaming
+
 
     def _log_info(self, msg):
         if self.logger:
@@ -492,29 +377,58 @@ class CameraFirebaseManager:
         """Public alias for capture_and_upload_task."""
         return self.capture_and_upload_task(pitch_angle)
 
-    def _process_image_ocr(self, cv_image):
+    def _detect_meter_boxes(self, cv_image):
         """
-        On-device Deep Learning OCR Pipeline using RapidOCR (ONNX Runtime).
-        Extracts numbers/digits from the center Region of Interest (ROI),
-        annotates the image with a visual HUD bounding box and detected digits,
-        and returns the annotated image and detected digits string.
+        Detects blue meter boxes/enclosures (rectangular and cylindrical) using HSV segmentation.
+        Filters contours by area and aspect ratio to suppress background noise.
+        Returns a list of bounding boxes [(x1, y1, x2, y2), ...] sorted strictly left-to-right (x1 ascending).
         """
-        self._log_info("Running on-device OCR pipeline...")
-        h, w = cv_image.shape[:2]
+        h_img, w_img = cv_image.shape[:2]
+        img_area = float(w_img * h_img)
 
-        # 1. Crop Region of Interest (ROI) - Centered bounding box where camera HUD crosshair aims
-        # Designed for the meter box (4 digits under REAI header or real analog rolling counters)
-        roi_w = int(w * 0.45)
-        roi_h = int(h * 0.35)
-        start_x = (w - roi_w) // 2
-        start_y = (h - roi_h) // 2
-        roi = cv_image[start_y:start_y + roi_h, start_x:start_x + roi_w]
+        # Blue color range in HSV space (tuned for meter enclosures, handles specular glare)
+        hsv = cv2.cvtColor(cv_image, cv2.COLOR_BGR2HSV)
+        lower_blue = np.array([90, 45, 30])
+        upper_blue = np.array([140, 255, 255])
+        mask = cv2.inRange(hsv, lower_blue, upper_blue)
 
+        # Noise reduction via morphology open/close
+        kernel = np.ones((5, 5), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Filtering thresholds
+        min_area = img_area * 0.005  # At least 0.5% of total frame area
+        max_area = img_area * 0.70  # At most 70% of total frame area
+
+        boxes = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if min_area < area < max_area:
+                bx, by, bw, bh = cv2.boundingRect(c)
+                ar = bw / float(bh)
+                # Meter boxes (rectangular / cylindrical) aspect ratio check
+                if 0.35 < ar < 3.0:
+                    boxes.append((bx, by, bx + bw, by + bh))
+
+        # Sort strictly left-to-right by X coordinate
+        boxes.sort(key=lambda b: b[0])
+        return boxes
+
+    def _extract_digits_from_roi(self, roi):
+        """
+        Runs RapidOCR (or PaddleOCR fallback) on a given cropped ROI.
+        Performs box containment suppression, header exclusion ('REAI', etc.), and digit normalization.
+        Returns:
+            detected_number_str (str): Extracted digit sequence (e.g. '4802') or 'NOT_DETECTED' / 'MOCK_1234'
+            valid_detected_boxes (list): List of detected character box dicts with local coordinates
+        """
         detected_number_str = ""
         extracted_digits_list = []
         valid_detected_boxes = []
 
-        # 2. Run inference with RapidOCR / PaddleOCR
         if self.ocr_reader is not None:
             try:
                 raw_boxes = []
@@ -532,45 +446,48 @@ class CameraFirebaseManager:
                                 if item and len(item) >= 2 and isinstance(item[1], (tuple, list)):
                                     raw_boxes.append((item[0], item[1][0], item[1][1]))
 
-                # Parse and compute bounding boxes
+                digit_map = {'O': '0', 'o': '0', 'D': '0', 'I': '1', 'l': '1', 'i': '1', 'Z': '2', 'z': '2', 'S': '5', 's': '5', 'B': '8', 'b': '6'}
+
+                # 1. Parse and immediately filter out non-digit headers (e.g., 'REAI')
                 parsed_boxes = []
                 for box, text, score in raw_boxes:
+                    raw_text = str(text).strip()
+                    # Skip known English header labels like 'REAI', 'WATER', etc.
+                    if 'REA' in raw_text.upper() or 'EAI' in raw_text.upper():
+                        continue
+                    invalid_chars = [c for c in raw_text if c.isalpha() and c not in digit_map]
+                    if len(invalid_chars) > 0 and len(raw_text) > 2:
+                        continue
+
                     xs = [p[0] for p in box]
                     ys = [p[1] for p in box]
                     xmin, xmax = min(xs), max(xs)
                     ymin, ymax = min(ys), max(ys)
                     parsed_boxes.append({
-                        'box': box, 'text': str(text).strip(), 'score': float(score),
+                        'box': box, 'text': raw_text, 'score': float(score),
                         'xmin': xmin, 'xmax': xmax, 'ymin': ymin, 'ymax': ymax
                     })
 
-                # Suppression / containment filter:
-                # If a smaller box is largely inside a larger box with higher score, suppress the smaller box
+                # 2. 2D Suppression filter: Only suppress if boxes significantly overlap in both X and Y
                 filtered_boxes = []
                 for i, b1 in enumerate(parsed_boxes):
                     is_contained = False
                     for j, b2 in enumerate(parsed_boxes):
                         if i != j:
-                            if b1['xmin'] >= b2['xmin'] - 20 and b1['xmax'] <= b2['xmax'] + 20 and b1['score'] < b2['score']:
+                            x_overlap = max(0, min(b1['xmax'], b2['xmax']) - max(b1['xmin'], b2['xmin']))
+                            y_overlap = max(0, min(b1['ymax'], b2['ymax']) - max(b1['ymin'], b2['ymin']))
+                            area1 = (b1['xmax'] - b1['xmin']) * (b1['ymax'] - b1['ymin'])
+                            if area1 > 0 and ((x_overlap * y_overlap) / float(area1)) > 0.55 and b1['score'] < b2['score']:
                                 is_contained = True
                                 break
                     if not is_contained:
                         filtered_boxes.append(b1)
 
-                # Sort left to right by xmin for proper reading order
                 filtered_boxes.sort(key=lambda b: b['xmin'])
 
-                # Character normalization for digits (common OCR confusions in meter reading)
-                digit_map = {'O': '0', 'o': '0', 'D': '0', 'I': '1', 'l': '1', 'i': '1', 'Z': '2', 'z': '2', 'S': '5', 's': '5', 'B': '8', 'b': '6'}
-
+                # 3. Extract and normalize digits
                 for b in filtered_boxes:
-                    raw_text = b['text']
-                    # Skip English header labels like 'REAI', 'WATER', etc.
-                    invalid_chars = [c for c in raw_text if c.isalpha() and c not in digit_map]
-                    if len(invalid_chars) > 0 and len(raw_text) > 2:
-                        continue
-
-                    converted = ''.join(digit_map.get(c, c) for c in raw_text)
+                    converted = ''.join(digit_map.get(c, c) for c in b['text'])
                     digits = re.sub(r'\D', '', converted)
                     if digits:
                         extracted_digits_list.append(digits)
@@ -578,77 +495,195 @@ class CameraFirebaseManager:
 
                 if extracted_digits_list:
                     detected_number_str = "".join(extracted_digits_list)
-                    self._log_info(f"✅ OCR Success: {detected_number_str}")
                 else:
-                    self._log_info("OCR ran successfully but no digits found in ROI.")
                     detected_number_str = "NOT_DETECTED"
             except Exception as e:
                 self._log_error(f"Error during OCR inference: {e}. Falling back to MOCK_1234.")
                 detected_number_str = "MOCK_1234"
         else:
-            self._log_info("OCR engine not active. Using fallback reading: MOCK_1234")
             detected_number_str = "MOCK_1234"
 
-        # 3. Visual Annotation on Image: Draw bounding box & text overlay
+        return detected_number_str, valid_detected_boxes
+
+    def _process_image_ocr(self, cv_image):
+        """
+        Hybrid Meter Detection + RapidOCR Pipeline:
+        1. Checks self.enable_multi_meter and detects blue meter boxes using HSV.
+        2. Safety Fallback: If toggle is False OR 0 blue boxes detected -> Falls back to classic Fixed Center ROI.
+        3. Multi-Meter Mode: If boxes detected -> Iterates through boxes (sorted left-to-right),
+           crops each with 15% horizontal / 12% vertical padding, runs RapidOCR, and creates:
+           - An individually annotated cropped image for each meter (used for split upload).
+           - A unified full annotated image (for local archive).
+        Returns:
+            annotated_image (np.ndarray): Full image with green/yellow/red HUD bounding boxes and badges
+            meter_records (list): List of dicts per meter:
+                [{
+                    "label": "METER 1: 7527" (or "CENTER_METER: 1234"),
+                    "reading": "7527",
+                    "cropped_image": crop_annotated (np.ndarray),
+                    "meter_index": 1,
+                    "is_fallback": False
+                }, ...]
+        """
+        self._log_info("Running Hybrid Meter Detection + OCR pipeline...")
+        h, w = cv_image.shape[:2]
         annotated_image = cv_image.copy()
 
-        # Box Color: Green for successful detection, Cyan/Yellow for fallback, Red for not detected
-        if detected_number_str not in ("NOT_DETECTED", "MOCK_1234"):
-            box_color = (0, 255, 0) # Green
-        elif detected_number_str == "MOCK_1234":
-            box_color = (0, 200, 255) # Yellow/Cyan
+        # Check Multi-Meter detection toggle and find boxes
+        meter_boxes = []
+        if self.enable_multi_meter:
+            meter_boxes = self._detect_meter_boxes(cv_image)
+            if meter_boxes:
+                self._log_info(f"HSV Multi-Meter: Found {len(meter_boxes)} meter box(es) (sorted left-to-right).")
+            else:
+                self._log_info("HSV Multi-Meter: 0 blue meter boxes detected. Engaging Fixed Center ROI Fallback.")
         else:
-            box_color = (0, 0, 255) # Red
+            self._log_info("Multi-Meter toggle is OFF. Using Fixed Center ROI mode.")
 
-        # Draw ROI target border
-        cv2.rectangle(annotated_image, (start_x, start_y), (start_x + roi_w, start_y + roi_h), box_color, 4)
+        # If no meter boxes detected (or multi-meter disabled), use Fixed Center ROI
+        if not meter_boxes:
+            roi_w = int(w * 0.45)
+            roi_h = int(h * 0.35)
+            start_x = (w - roi_w) // 2
+            start_y = (h - roi_h) // 2
+            meter_boxes = [(start_x, start_y, start_x + roi_w, start_y + roi_h)]
+            is_fallback_mode = True
+        else:
+            is_fallback_mode = False
 
-        # Draw individual detected character/box highlights inside ROI
-        for b in valid_detected_boxes:
-            box_pts = b['box']
-            pts = np.array([[int(p[0] + start_x), int(p[1] + start_y)] for p in box_pts], np.int32)
-            pts = pts.reshape((-1, 1, 2))
-            cv2.polylines(annotated_image, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+        meter_records = []
 
-        # Draw HUD Label on top of the ROI box
-        label_text = f"METER READING: {detected_number_str}"
-        font_scale = max(0.8, w / 2200.0 * 1.3)
-        thickness = max(2, int(font_scale * 2))
+        # Process each meter box
+        for idx, (bx1, by1, bx2, by2) in enumerate(meter_boxes):
+            # Apply padding (15% horizontal, 12% vertical) if detected via HSV; center ROI already has appropriate margins
+            if not is_fallback_mode:
+                pad_x = int((bx2 - bx1) * 0.15)
+                pad_y = int((by2 - by1) * 0.12)
+                crop_x1 = max(0, bx1 - pad_x)
+                crop_y1 = max(0, by1 - pad_y)
+                crop_x2 = min(w, bx2 + pad_x)
+                crop_y2 = min(h, by2 + pad_y)
+            else:
+                crop_x1, crop_y1, crop_x2, crop_y2 = bx1, by1, bx2, by2
 
-        (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-        text_bg_y1 = max(0, start_y - text_h - 18)
-        text_bg_y2 = start_y
-        cv2.rectangle(annotated_image, (start_x, text_bg_y1), (start_x + text_w + 20, text_bg_y2), (0, 0, 0), -1)
-        cv2.putText(annotated_image, label_text, (start_x + 10, start_y - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, box_color, thickness, cv2.LINE_AA)
+            roi = cv_image[crop_y1:crop_y2, crop_x1:crop_x2]
+            reading, valid_boxes = self._extract_digits_from_roi(roi)
 
-        return annotated_image, detected_number_str
+            # Determine label text
+            if is_fallback_mode:
+                label_text = f"CENTER_METER: {reading}"
+            else:
+                label_text = f"METER {idx + 1}: {reading}"
+
+            # Determine HUD color
+            if reading not in ("NOT_DETECTED", "MOCK_1234"):
+                box_color = (0, 255, 0)      # Green: Successful OCR
+            elif reading == "MOCK_1234":
+                box_color = (0, 200, 255)    # Yellow/Cyan: Fallback Mock
+            else:
+                box_color = (0, 0, 255)      # Red: Not detected
+
+            # --- Create Annotated Cropped Image for this specific meter ---
+            crop_annotated = roi.copy()
+            ch, cw = crop_annotated.shape[:2]
+
+            # 1. Draw outer border on the crop
+            cv2.rectangle(crop_annotated, (2, 2), (cw - 3, ch - 3), box_color, 3)
+
+            # 2. Draw individual detected character polygons inside the crop
+            for b in valid_boxes:
+                box_pts = b['box']
+                pts = np.array(box_pts, np.int32).reshape((-1, 1, 2))
+                cv2.polylines(crop_annotated, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+
+            # 3. Draw HUD Label Banner on the crop
+            crop_font_scale = max(0.6, min(1.1, cw / 260.0))
+            crop_thickness = max(2, int(crop_font_scale * 2))
+            (ctw, cth), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, crop_font_scale, crop_thickness)
+            cv2.rectangle(crop_annotated, (0, 0), (min(cw, ctw + 18), cth + 16), (0, 0, 0), -1)
+            cv2.putText(crop_annotated, label_text, (8, cth + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, crop_font_scale, box_color, crop_thickness, cv2.LINE_AA)
+
+            meter_records.append({
+                "label": label_text,
+                "reading": reading,
+                "cropped_image": crop_annotated,
+                "meter_index": idx + 1 if not is_fallback_mode else 1,
+                "is_fallback": is_fallback_mode
+            })
+
+            # --- Also Draw on Full Image (for local archive) ---
+            cv2.rectangle(annotated_image, (crop_x1, crop_y1), (crop_x2, crop_y2), box_color, 3)
+            for b in valid_boxes:
+                box_pts = b['box']
+                pts = np.array([[int(p[0] + crop_x1), int(p[1] + crop_y1)] for p in box_pts], np.int32)
+                pts = pts.reshape((-1, 1, 2))
+                cv2.polylines(annotated_image, [pts], isClosed=True, color=(0, 255, 255), thickness=2)
+
+            # Draw Label on full image
+            full_font_scale = max(0.55, min(1.0, (crop_x2 - crop_x1) / 250.0))
+            full_thickness = max(1, int(full_font_scale * 2))
+            (ftw, fth), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, full_font_scale, full_thickness)
+
+            if crop_y1 - fth - 12 >= 0:
+                fbg_y1 = crop_y1 - fth - 12
+                fbg_y2 = crop_y1
+                ftext_y = crop_y1 - 6
+            else:
+                fbg_y1 = crop_y1
+                fbg_y2 = crop_y1 + fth + 12
+                ftext_y = crop_y1 + fth + 6
+
+            fbg_x1 = crop_x1
+            fbg_x2 = min(w, crop_x1 + ftw + 14)
+            cv2.rectangle(annotated_image, (fbg_x1, fbg_y1), (fbg_x2, fbg_y2), (0, 0, 0), -1)
+            cv2.putText(annotated_image, label_text, (fbg_x1 + 6, ftext_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, full_font_scale, box_color, full_thickness, cv2.LINE_AA)
+
+        summary_str = ", ".join(m["label"] for m in meter_records)
+        self._log_info(f"✅ OCR Results: {summary_str} ({len(meter_records)} meter(s))")
+
+        return annotated_image, meter_records
+
+    def _grab_frame_from_stream(self):
+        """
+        Grabs the latest 720p frame directly from the active MediaMTX RTSP stream
+        (rtsp://127.0.0.1:8554/live) with zero downtime to the WebRTC FPV stream.
+        Returns:
+            frame (np.ndarray or None): Decoded BGR image
+        """
+        auto_started = False
+        with self._camera_lock:
+            if not self.is_streaming or self.stream_process is None or self.stream_process.poll() is not None:
+                self._log_info("STREAM_GRAB: MediaMTX stream is not currently active. Auto-starting stream...")
+                self.stream_process = self._start_vid_process()
+                self.is_streaming = True
+                auto_started = True
+
+        if auto_started:
+            time.sleep(1.8) # Wait briefly for RTSP broker ready
+
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+        t0 = time.time()
+        cap = cv2.VideoCapture("rtsp://127.0.0.1:8554/live", cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        frame = None
+        if cap.isOpened():
+            ret, grabbed = cap.read()
+            if ret and grabbed is not None:
+                frame = grabbed
+                elapsed = (time.time() - t0) * 1000
+                self._log_info(f"✅ STREAM_GRAB: Captured {frame.shape[1]}x{frame.shape[0]} frame in {elapsed:.1f}ms (Zero Downtime)")
+            cap.release()
+        else:
+            self._log_error("STREAM_GRAB: Failed to connect to RTSP endpoint rtsp://127.0.0.1:8554/live")
+
+        return frame
 
     def _capture_and_upload_worker(self, pitch_angle):
         """Blocking workload executed in the background thread."""
         try:
-            # --- CONFLICT HANDLING ---
-            # If stream is ON, we must pause it and release the hardware lock
-            was_streaming = False
-            with self._camera_lock:
-                if self.is_streaming:
-                    self._log_info("Pausing FPV stream to free camera for high-res capture...")
-                    was_streaming = True
-                    self.is_streaming = False
-                    if self.stream_process:
-                        self.stream_process.terminate()
-                        try:
-                            self.stream_process.wait(timeout=0.5)
-                        except subprocess.TimeoutExpired:
-                            self.stream_process.kill()
-                            self.stream_process.wait()
-                        self.stream_process = None
-            
-            # Give the hardware a split second to completely release the V4L2 device
-            if was_streaming:
-                time.sleep(0.5)
-            # -------------------------
-
             timestamp_dt = datetime.now(timezone.utc)
             timestamp_str_file = timestamp_dt.strftime("%Y%m%d_%H%M%S")
             iso_timestamp = timestamp_dt.isoformat()
@@ -657,107 +692,170 @@ class CameraFirebaseManager:
             filename = f"img_{index:04d}_{timestamp_str_file}.jpg"
             filepath = os.path.join(self.images_dir, filename)
 
-            # 1. Capture Full-Res Image using rpicam-still (Hardware ISP & Autofocus)
-            self._log_info(f"Capturing: {filename} using {CAPTURE_COMMAND}...")
-            cmd = [
-                CAPTURE_COMMAND,
-                "-o", filepath,
-                "--autofocus-on-capture",
-                "--timeout", "1000",
-                "--nopreview"
-            ]
-            if FLIP_VIDEO:
-                cmd.extend(["--hflip", "--vflip"])
-            
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if result.returncode != 0:
-                self._log_error(f"Camera capture failed: {result.stderr}")
-                return
+            img = None
+            was_streaming = False
 
-            self._log_info(f"Saved locally: {filepath}")
-            self.manage_local_storage()
+            # ==========================================
+            # DUAL CAPTURE MODE ROUTING
+            # ==========================================
+            if self.capture_mode == "STREAM_GRAB":
+                self._log_info(f"📸 Triggering capture: {filename} via [STREAM_GRAB] (Zero-Downtime Mode)...")
+                img = self._grab_frame_from_stream()
+                if img is not None:
+                    # Save local archive copy
+                    cv2.imwrite(filepath, img)
+                    self._log_info(f"Saved locally: {filepath}")
+                    self.manage_local_storage()
+                else:
+                    self._log_error("STREAM_GRAB failed. Falling back to HARDWARE_STILL mode...")
 
-            # 2. Load with OpenCV for Processing/Compression
-            self._log_info("Reading high-res image with OpenCV...")
-            img = cv2.imread(filepath)
             if img is None:
-                self._log_error(f"OpenCV failed to read {filepath}")
-                return
+                # ==========================================
+                # HARDWARE_STILL (High-Res Turbo Mode)
+                # ==========================================
+                self._log_info(f"📸 Triggering capture: {filename} via [HARDWARE_STILL] (Turbo High-Res Mode)...")
 
-            meter_reading = None
+                with self._camera_lock:
+                    if self.is_streaming:
+                        self._log_info("Pausing MediaMTX WebRTC stream to free camera for high-res capture...")
+                        was_streaming = True
+                        self.is_streaming = False
+                        if self.stream_process:
+                            self.stream_process.terminate()
+                            try:
+                                self.stream_process.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                self.stream_process.kill()
+                                self.stream_process.wait()
+                            self.stream_process = None
 
-            # 3. Pipeline Routing based on Mode
+                # Minimized hardware release buffer (0.15s)
+                if was_streaming:
+                    time.sleep(0.15)
+
+                af_range = "macro" if pitch_angle <= 0 else "normal"
+                self._log_info(f"Capturing: {filename} (Pitch: {pitch_angle:.1f}°, AF Range: {af_range}, Timeout: 600ms)...")
+                cmd = [
+                    CAPTURE_COMMAND,
+                    "-o", filepath,
+                    "--autofocus-on-capture",
+                    "--autofocus-range", af_range,
+                    "--autofocus-window", "0.25,0.25,0.5,0.5",
+                    "--hdr", "sensor",
+                    "--timeout", "600",
+                    "--nopreview"
+                ]
+                if FLIP_VIDEO:
+                    cmd.extend(["--hflip", "--vflip"])
+
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+                # --- IMMEDIATE RE-LAUNCH: Resume MediaMTX stream immediately so FPV returns in < 1s ---
+                if was_streaming:
+                    self._log_info("Hardware capture complete. Immediately re-launching MediaMTX stream...")
+                    with self._camera_lock:
+                        try:
+                            self.stream_process = self._start_vid_process()
+                            self.is_streaming = True
+                            was_streaming = False # Cleared since already resumed
+                        except Exception as e:
+                            self._log_error(f"Failed to re-launch MediaMTX: {e}")
+
+                if result.returncode != 0:
+                    self._log_error(f"Camera capture failed: {result.stderr}")
+                    return
+
+                self._log_info(f"Saved locally: {filepath}")
+                self.manage_local_storage()
+
+                # Read captured high-res image
+                img = cv2.imread(filepath)
+                if img is None:
+                    self._log_error(f"OpenCV failed to read {filepath}")
+                    return
+
+            # ==========================================
+            # COMMON PIPELINE: OCR & Firebase Upload
+            # ==========================================
+            meter_records = []
+
             if self.processing_mode == "OPENCV_OCR":
-                img, meter_reading = self._process_image_ocr(img)
+                annotated_full, meter_records = self._process_image_ocr(img)
+                # Overwrite locally saved full image with annotated full image for archive
+                cv2.imwrite(filepath, annotated_full)
             else:
-                meter_reading = "DIRECT_MODE"
+                meter_records = [{
+                    "label": "DIRECT_MODE",
+                    "reading": "DIRECT_MODE",
+                    "cropped_image": img,
+                    "meter_index": 1,
+                    "is_fallback": True
+                }]
 
-            if meter_reading and meter_reading not in ("NOT_DETECTED", "DIRECT_MODE", "MOCK_1234"):
-                self._log_info(f"✅ OCR Success: {meter_reading}")
-            else:
-                self._log_info(f"OCR Mode '{self.processing_mode}' output: {meter_reading}")
-
-            # 4. Resize and Compress
-            max_dim = 800
-            h, w = img.shape[:2]
-            if max(h, w) > max_dim:
-                scale = max_dim / float(max(h, w))
-                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
-            success, buffer = cv2.imencode('.jpg', img, encode_param)
-            if not success:
-                self._log_error("OpenCV failed to encode image buffer.")
-                return
-
-            # Convert to Base64
-            b64_string = base64.b64encode(buffer).decode('utf-8')
-            data_uri = f"data:image/jpeg;base64,{b64_string}"
-            self._log_info(f"Base64 generated (Size: {len(data_uri)/1024:.1f} KB)")
-
-            # 5. Push to Firebase RTDB
-            self._log_info("Pushing to Firebase RTDB (/meter_records)...")
-            
-            try:
-                record_id = db.reference('/meter_records').push().key
-            except Exception:
-                record_id = uuid.uuid4().hex
-                
+            # Upload each meter record individually (Split Uploads using Cropped Images)
+            self._log_info(f"Uploading {len(meter_records)} meter record(s) to Firebase RTDB...")
             meter_type = "electricity" if pitch_angle > 0 else "water"
-            
-            payload = {
-                "record_id": record_id,
-                "filename": filename,
-                "image_base64": data_uri,
-                "image_data": data_uri,
-                "timestamp": iso_timestamp,
-                "meter_reading": meter_reading,
-                "meter_type": meter_type
-            }
 
-            try:
-                db.reference(f'/meter_records/{record_id}').set(payload)
-                self.last_capture_time = time.time()
-                self._log_info(f"Successfully pushed to RTDB! Record ID: {record_id} | Reading: {meter_reading} | Mode: {self.processing_mode}")
-            except Exception as e:
-                self._log_error(f"Upload failed: {e}. Queuing for offline sync.")
-                self.last_capture_time = time.time()
-                self._queue_payload(payload)
+            for idx, item in enumerate(meter_records):
+                crop_img = item["cropped_image"]
+
+                # Resize crop if larger than 800px (safety check, crops are usually ~300-600px)
+                ch, cw = crop_img.shape[:2]
+                if max(ch, cw) > 800:
+                    scale = 800.0 / float(max(ch, cw))
+                    crop_img = cv2.resize(crop_img, (int(cw * scale), int(ch * scale)), interpolation=cv2.INTER_AREA)
+
+                encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
+                success, buffer = cv2.imencode('.jpg', crop_img, encode_param)
+                if not success:
+                    self._log_error(f"OpenCV failed to encode cropped image for {item['label']}.")
+                    continue
+
+                # Convert to Base64 (uploading cropped ROI only)
+                b64_string = base64.b64encode(buffer).decode('utf-8')
+                crop_data_uri = f"data:image/jpeg;base64,{b64_string}"
+
+                try:
+                    record_id = db.reference('/meter_records').push().key
+                except Exception:
+                    record_id = uuid.uuid4().hex
+
+                suffix = f"_m{item['meter_index']}" if not item.get("is_fallback") else "_center"
+                crop_filename = f"{filename[:-4]}{suffix}.jpg"
+
+                payload = {
+                    "record_id": record_id,
+                    "filename": crop_filename,
+                    "image_base64": crop_data_uri,
+                    "timestamp": iso_timestamp,
+                    "meter_reading": str(item["reading"]),
+                    "meter_index": item["meter_index"],
+                    "meter_type": meter_type,
+                    "is_fallback": item.get("is_fallback", False)
+                }
+
+                try:
+                    db.reference(f'/meter_records/{record_id}').set(payload)
+                    self._log_info(f"✅ Successfully pushed to RTDB! Record ID: {record_id} | {item['label']} (Reading: {item['reading']})")
+                except Exception as e:
+                    self._log_error(f"Upload failed for {item['label']}: {e}. Queuing for offline sync.")
+                    self._queue_payload(payload)
+
+            self.last_capture_time = time.time()
 
         except Exception as e:
             self._log_error(f"Exception in worker: {e}")
         finally:
-            # --- CONFLICT RECOVERY ---
-            # Resume stream if it was running before the capture
+            # Safety recovery if stream was paused but failed to resume before
             if was_streaming:
-                self._log_info("Resuming FPV stream...")
+                self._log_info("Safety recovery: Resuming MediaMTX WebRTC stream...")
                 with self._camera_lock:
                     try:
                         self.stream_process = self._start_vid_process()
                         self.is_streaming = True
                     except Exception as e:
-                        self._log_error(f"Failed to resume FPV stream. {e}")
-            # -------------------------
+                        self._log_error(f"Failed to resume WebRTC stream: {e}")
 
             with self._upload_lock:
                 self._is_capturing = False
+

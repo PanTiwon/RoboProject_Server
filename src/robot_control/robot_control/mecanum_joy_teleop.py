@@ -43,6 +43,8 @@ class MecanumJoyTeleop(Node):
         self.last_action2_state = 0
         self.last_action3_state = 0
         self.last_action_start_state = 0
+        self.last_action_estop_state = 0
+        self.last_action_recenter_state = 0
         self.last_speed_down_state = 0
         self.last_speed_up_state = 0
         
@@ -53,6 +55,7 @@ class MecanumJoyTeleop(Node):
         # Robot States
         self.vacuum_active = False
         self.is_muted = False
+        self.is_e_stop = False
         
         # Speed levels (Multiplier for max_speed)
         self.speed_levels = [0.25, 0.50, 0.75, 1.0]
@@ -71,13 +74,29 @@ class MecanumJoyTeleop(Node):
         self.declare_parameter('axis_dpad_x', 6) # D-pad Horizontal
         self.declare_parameter('axis_dpad_y', 7) # D-pad Vertical
         
-        self.declare_parameter('btn_photo', 0) # Action 1 (Cross/A)
-        self.declare_parameter('btn_vacuum', 1) # Action 2 (Circle/B)
-        self.declare_parameter('btn_mute', 2) # Action 4 (Triangle/Y)
+        # Auto-detect Gamepad Layout (Xbox vs PlayStation)
+        is_xbox = False
+        try:
+            if os.path.exists('/proc/bus/input/devices'):
+                with open('/proc/bus/input/devices', 'r') as f:
+                    content = f.read().lower()
+                    if 'x-box' in content or 'xbox' in content or 'xinput' in content:
+                        is_xbox = True
+        except Exception:
+            pass
+
+        default_btn_estop = 2 if is_xbox else 3 # Left diamond button: X on Xbox (2), Square on PS (3)
+        default_btn_mute = 3 if is_xbox else 2  # Top diamond button: Y on Xbox (3), Triangle on PS (2)
+        
+        self.declare_parameter('btn_photo', 0) # Bottom: Cross/A
+        self.declare_parameter('btn_vacuum', 1) # Right: Circle/B
+        self.declare_parameter('btn_mute', default_btn_mute) # Top: Triangle/Y
+        self.declare_parameter('btn_estop', default_btn_estop) # Left: Square/X (E-Stop Toggle)
         self.declare_parameter('btn_mode', 6) # Action 3 / Mode Switch (Select / Share / Back)
         self.declare_parameter('btn_start', 7) # Start / Options
         self.declare_parameter('btn_speed_down', 4) # L1 (Left Bumper)
         self.declare_parameter('btn_speed_up', 5) # R1 (Right Bumper)
+        self.declare_parameter('btn_recenter', 9) # L3 (Left Stick click - Camera Recenter)
         
         # Serial parameters
         self.declare_parameter('serial_port', '/dev/ttyACM0')
@@ -132,10 +151,12 @@ class MecanumJoyTeleop(Node):
         btn_photo_idx = self.get_parameter('btn_photo').value
         btn_vacuum_idx = self.get_parameter('btn_vacuum').value
         btn_mute_idx = self.get_parameter('btn_mute').value
+        btn_estop_idx = self.get_parameter('btn_estop').value
         btn_mode_idx = self.get_parameter('btn_mode').value
         btn_start_idx = self.get_parameter('btn_start').value
         btn_speed_down_idx = self.get_parameter('btn_speed_down').value
         btn_speed_up_idx = self.get_parameter('btn_speed_up').value
+        btn_recenter_idx = self.get_parameter('btn_recenter').value
         
         # Get raw values
         try:
@@ -149,32 +170,38 @@ class MecanumJoyTeleop(Node):
             fwd_val = bwd_val = strafe_val = rot_val = dpad_x_val = dpad_y_val = 0.0
 
         try:
-            action1 = msg.buttons[btn_photo_idx]
-            action2 = msg.buttons[btn_vacuum_idx]
-            action_mute = msg.buttons[btn_mute_idx]
-            action3 = msg.buttons[btn_mode_idx]
-            action_start = msg.buttons[btn_start_idx]
-            speed_down = msg.buttons[btn_speed_down_idx]
-            speed_up = msg.buttons[btn_speed_up_idx]
+            action1 = msg.buttons[btn_photo_idx] if len(msg.buttons) > btn_photo_idx else 0
+            action2 = msg.buttons[btn_vacuum_idx] if len(msg.buttons) > btn_vacuum_idx else 0
+            action_mute = msg.buttons[btn_mute_idx] if len(msg.buttons) > btn_mute_idx else 0
+            action_estop = msg.buttons[btn_estop_idx] if len(msg.buttons) > btn_estop_idx else 0
+            action3 = msg.buttons[btn_mode_idx] if len(msg.buttons) > btn_mode_idx else 0
+            action_start = msg.buttons[btn_start_idx] if len(msg.buttons) > btn_start_idx else 0
+            speed_down = msg.buttons[btn_speed_down_idx] if len(msg.buttons) > btn_speed_down_idx else 0
+            speed_up = msg.buttons[btn_speed_up_idx] if len(msg.buttons) > btn_speed_up_idx else 0
+            action_recenter = msg.buttons[btn_recenter_idx] if len(msg.buttons) > btn_recenter_idx else 0
         except IndexError:
-            action1 = action2 = action_mute = action3 = action_start = speed_down = speed_up = 0
+            action1 = action2 = action_mute = action_estop = action3 = action_start = speed_down = speed_up = action_recenter = 0
 
         # Edge detection for buttons
         action1_pressed = (action1 == 1 and self.last_action1_state == 0)
         action2_pressed = (action2 == 1 and self.last_action2_state == 0)
         action_mute_pressed = (action_mute == 1 and getattr(self, 'last_action_mute_state', 0) == 0)
+        action_estop_pressed = (action_estop == 1 and getattr(self, 'last_action_estop_state', 0) == 0)
         action3_pressed = (action3 == 1 and self.last_action3_state == 0)
         action_start_pressed = (action_start == 1 and self.last_action_start_state == 0)
         speed_down_pressed = (speed_down == 1 and self.last_speed_down_state == 0)
         speed_up_pressed = (speed_up == 1 and self.last_speed_up_state == 0)
+        action_recenter_pressed = (action_recenter == 1 and getattr(self, 'last_action_recenter_state', 0) == 0)
 
         self.last_action1_state = action1
         self.last_action2_state = action2
         self.last_action_mute_state = action_mute
+        self.last_action_estop_state = action_estop
         self.last_action3_state = action3
         self.last_action_start_state = action_start
         self.last_speed_down_state = speed_down
         self.last_speed_up_state = speed_up
+        self.last_action_recenter_state = action_recenter
         
         # Speed Control (L1 / R1) - Only adjust speed if NOT holding both together (which is shutdown combo)
         if speed_down_pressed and not speed_up:
@@ -228,20 +255,37 @@ class MecanumJoyTeleop(Node):
         # Action 2: Vacuum Toggle
         if action2_pressed:
             self.vacuum_active = not self.vacuum_active
-            
-        # Continuous Camera Yaw/Pitch Control via D-pad (approx 2 degrees per 0.05s tick = 40 deg/sec)
-        if dpad_x_val > 0.5:
-            self.yaw_angle = min(90.0, self.yaw_angle + 2.0)
-        elif dpad_x_val < -0.5:
-            self.yaw_angle = max(-90.0, self.yaw_angle - 2.0)
-            
-        if dpad_y_val > 0.5:
-            self.pitch_angle = min(90.0, self.pitch_angle + 2.0)
-        elif dpad_y_val < -0.5:
-            self.pitch_angle = max(-30.0, self.pitch_angle - 2.0)
-            
-        self.camera_manager.current_yaw = int(self.yaw_angle)
-        self.camera_manager.current_pitch = int(self.pitch_angle)
+
+        # Action E-Stop Toggle (Square / X - Button Index 3)
+        if action_estop_pressed:
+            self.is_e_stop = not self.is_e_stop
+            if self.is_e_stop:
+                self.get_logger().warn("🚨 [E-STOP] EMERGENCY BRAKE ENGAGED! All motors locked to 0.")
+                self.serial_ctrl.send_command([0, 0, 0, 0], self.vacuum_active, self.yaw_angle, self.pitch_angle)
+            else:
+                self.get_logger().info("✅ [E-STOP] Emergency brake released. Normal drive controls unlocked.")
+
+        # Action Recenter Camera with Offset (L3 - Button Index 9)
+        if action_recenter_pressed:
+            self.yaw_angle = 0.0
+            self.pitch_angle = 8.0
+            self.camera_manager.current_yaw = int(self.yaw_angle)
+            self.camera_manager.current_pitch = int(self.pitch_angle)
+            self.get_logger().info("📷 [CAMERA] Recenter: Yaw=0.0°, Pitch=8.0° (Hardware Offset)")
+        else:
+            # Continuous Camera Yaw/Pitch Control via D-pad (approx 2 degrees per 0.05s tick = 40 deg/sec)
+            if dpad_x_val > 0.5:
+                self.yaw_angle = min(90.0, self.yaw_angle + 2.0)
+            elif dpad_x_val < -0.5:
+                self.yaw_angle = max(-90.0, self.yaw_angle - 2.0)
+                
+            if dpad_y_val > 0.5:
+                self.pitch_angle = min(90.0, self.pitch_angle + 2.0)
+            elif dpad_y_val < -0.5:
+                self.pitch_angle = max(-30.0, self.pitch_angle - 2.0)
+                
+            self.camera_manager.current_yaw = int(self.yaw_angle)
+            self.camera_manager.current_pitch = int(self.pitch_angle)
 
         # Compute combined linear_x
         linear_x = fwd_val - bwd_val
@@ -292,8 +336,8 @@ class MecanumJoyTeleop(Node):
             self.shutdown_start_time = None
             self.shutdown_countdown_sec = 0.0
 
-        # If shutting down, lock all wheel velocities to 0
-        if self.is_shutting_down:
+        # If shutting down or E-Stop is active, lock all wheel velocities to 0
+        if self.is_shutting_down or self.is_e_stop:
             linear_x = linear_y = angular_z = 0.0
 
         # Execute Mode Logic
@@ -301,7 +345,10 @@ class MecanumJoyTeleop(Node):
             self.execute_auto_mode()
         else:
             # Calculate raw intended speeds
-            v_fl, v_fr, v_rl, v_rr = self.calculate_kinematics(linear_x, linear_y, angular_z)
+            if self.is_e_stop:
+                v_fl = v_fr = v_rl = v_rr = 0
+            else:
+                v_fl, v_fr, v_rl, v_rr = self.calculate_kinematics(linear_x, linear_y, angular_z)
             
             # Safety Logic: Check if ESP32 is actually connected
             is_esp32_connected = (self.serial_ctrl.ser is not None and self.serial_ctrl.ser.is_open)
@@ -363,9 +410,11 @@ class MecanumJoyTeleop(Node):
         print(f"  ESP32 Link     : {link_str}")
         bat_str = f"{self.battery_percent}%" if self.battery_percent >= 0 else "WAITING..."
         print(f"  Battery Level  : [ {bat_str} ]")
+        estop_str = "🚨 [ ENGAGED (STOPPED) ]" if self.is_e_stop else "[ OFF (NORMAL) ]"
+        print(f"  E-Stop Status  : {estop_str}")
         print(f"  Vacuum Status : {'[ ON ] ' if self.vacuum_active else '[ OFF ]'}")
         print(f"  Camera Mount   : Yaw [ {int(self.yaw_angle):>3}° ] Pitch [ {int(self.pitch_angle):>3}° ]")
-        print(f"  FPV Stream     : {'[ LIVE ] (Port 5000)' if self.camera_manager.is_streaming else '[ OFF ] (Press Start)'}")
+        print(f"  FPV Stream     : {'[ WEBRTC LIVE ] (WHEP :8889)' if self.camera_manager.is_streaming else '[ OFF ] (Press Start)'}")
         print(f"  Audio Status   : {'[ MUTED ]' if self.is_muted else '[ UNMUTED ]'}")
         print(f"  Photo Trigger  : {'* CLICK *' if photo_trigger else 'Ready    '}")
         print(f"  Speed Level    : [{speed_bars}{speed_spaces}] {speed_percent}%  (L1/R1 to Adjust)")
@@ -387,7 +436,9 @@ class MecanumJoyTeleop(Node):
         print(f"-----------------------------------------")
         
         dir_str = "STOPPED     "
-        if abs(vx) > 0.1 or abs(vy) > 0.1 or abs(wz) > 0.1:
+        if self.is_e_stop:
+            dir_str = "🚨 E-STOPPED"
+        elif abs(vx) > 0.1 or abs(vy) > 0.1 or abs(wz) > 0.1:
             if vx > 0.5: dir_str = "FORWARD     "
             elif vx < -0.5: dir_str = "BACKWARD    "
             elif vy > 0.5: dir_str = "STRAFE LEFT "

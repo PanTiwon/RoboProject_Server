@@ -47,6 +47,7 @@ pending_uploads.json
 *firebase*.json
 *credentials*.json
 *.key
+*.crt
 *.pem
 *.log
 

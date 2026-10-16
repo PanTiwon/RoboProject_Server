@@ -1,26 +1,32 @@
-# 🤖 Teleoperated Waste Collection Robot (Escape Velocity V1.1.0)
+# 🤖 Teleoperated Waste Collection Robot (Escape Velocity V1.1.2)
 
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble%20%2F%20Jazzy-blue.svg)](https://docs.ros.org/)
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20ESP32-green.svg)](#)
-[![Python](https://img.shields.io/badge/Python-3.12%20%7C%20Flask%20%7C%20OpenCV-yellow.svg)](#)
+[![Python](https://img.shields.io/badge/Python-3.12%20%7C%20OpenCV%20%7C%20ONNX-yellow.svg)](#)
+[![Streaming](https://img.shields.io/badge/Streaming-MediaMTX%20WebRTC%20WHEP-purple.svg)](#)
 [![Network](https://img.shields.io/badge/Network-Tailscale%20Funnel-red.svg)](#)
 [![Storage](https://img.shields.io/badge/Storage-FIFO%2050%20Img%20%7C%20Offline%20Queue-orange.svg)](#)
 [![License](https://img.shields.io/badge/License-Apache--2.0-lightgrey.svg)](LICENSE)
 
-A modular, distributed robotics software stack for a 4-wheel Mecanum waste collection robot. Built on **ROS 2**, the current **Escape Velocity V1.1.0** iteration focuses on reliable teleoperation with real-time kinematics calculation, hardware safety isolation, low-latency telemetry streaming, advanced FPV Camera HUD, and remote dashboard monitoring via Tailscale mesh networking. The software architecture is explicitly designed to seamlessly integrate autonomous navigation in future updates.
+A modular, distributed robotics software stack for a 4-wheel Mecanum waste collection robot. Built on **ROS 2**, the **Escape Velocity V1.1.2** release features ultra-low-latency **WebRTC (WHEP)** FPV streaming via **MediaMTX**, Deep Learning **RapidOCR (ONNX)** with automated HSV multi-meter segmentation and split uploads, gamepad **Emergency Brake (E-Stop Toggle)**, one-touch **Camera Recenter (L3)** with hardware offset, and an optimized, lean **Firebase Realtime Database (RTDB)** cloud pipeline.
 
 ---
 
 ## ✨ Key Features & System Highlights
 
 ### 📸 1. Vision, Cloud Storage & Offline Resilience
-* **Automated Image Quota Management (FIFO Max 50 Photos):** Prevents storage exhaustion on the Raspberry Pi's SD card / NVMe drive. Local storage (`images/`) maintains a strict 50-photo limit (`max_images = 50`); whenever a new capture occurs, the oldest photos are automatically pruned using modification-time (`mtime`) FIFO sorting.
-* **Offline-Resilient Capture Queue & Auto-Sync:** Photos captured during Wi-Fi or cellular dropouts are safely saved to local storage, and the payload is serialized into an offline queue (`pending_uploads.json`). A background daemon continuously polls connectivity every 10 seconds and automatically syncs all pending photos to Firebase Realtime Database (RTDB) once internet access is restored.
-* **On-Demand MJPEG FPV Stream with Zero-CPU ISP Flipping:** Video streaming (Port 5000) defaults to OFF to preserve battery and wireless bandwidth, toggled instantly via the Gamepad **Start** button. Hardware 180° image rotation is offloaded directly to the Raspberry Pi VideoCore ISP.
-* **Real-Time OpenCV HUD Overlay:** Enriches the FPV video stream with 0–60 cm parking guidelines for tight obstacle clearance, a sniper target crosshair, gimbal pan/tilt angles, and visual capture notifications.
-* **Camera Hardware Resource Locking:** Dynamically manages camera sensor exclusivity, cleanly pausing the live video stream (`rpicam-vid`) when a high-resolution photo (`rpicam-still`) is requested, and resuming the stream immediately afterward.
+* **Ultra-Low-Latency WebRTC FPV Streaming (MediaMTX & WHEP):** Upgraded from MJPEG to standard WebRTC via MediaMTX broker, providing sub-second glass-to-glass latency on port 8889 (`/live/whep`). Includes a standalone HTML5 WebRTC demo player (`whep_client_demo.html`).
+* **Dual Capture Mode (Zero-Downtime vs High-Res Turbo):**
+  * `STREAM_GRAB`: Instant zero-downtime capture directly from active MediaMTX RTSP stream without blacking out the FPV screen.
+  * `HARDWARE_STILL`: High-resolution photo capture with sensor HDR and instant stream re-launch (< 1s).
+* **Deep Learning RapidOCR & HSV Multi-Meter Detection:** Automatically segments blue meter enclosures via HSV color filtering with morphology cleanup and left-to-right spatial sorting. Includes 2D spatial suppression to eliminate non-digit header interference (e.g. "REAI").
+* **Multi-Meter Split Uploads & Lean Payload:** Each detected meter is cropped with +15% horizontal / +12% vertical padding and uploaded as an individual RTDB record with its own Base64 image and pure 4-digit reading, reducing payload size by ~50% compared to legacy redundant schemas.
+* **Automated Image Quota Management (FIFO Max 50 Photos):** Local storage (`images/`) maintains a strict 50-photo ceiling; oldest photos are automatically pruned using modification-time (`mtime`) FIFO sorting.
+* **Offline-Resilient Capture Queue & Auto-Sync:** Photos captured during Wi-Fi or cellular dropouts are safely queued in `pending_uploads.json` and automatically synced to Firebase RTDB by a background daemon once connection restores.
 
 ### 🔋 2. Hardware Power Management & Fail-Safe Mechanics
+* **Emergency Brake (E-Stop Toggle):** Square / X button on the gamepad immediately engages E-Stop, forcing all motor PWM commands to `<0, 0, 0, 0>`, publishing zero velocity to ROS 2 `/wheel_speeds`, and ignoring analog stick deflections until toggled off.
+* **Camera Recenter with Hardware Offset (L3):** Left stick click instantly resets Pan to 0.0° and Tilt to 8.0° (calibrated to prevent camera lens obstruction by chassis screws).
 * **Graceful Hardware Shutdown (`L1 + R1` Hold 5s):** Eliminates filesystem corruption by executing a safe OS shutdown (`sudo poweroff`) coupled with an I2C command to the Waveshare UPS HAT (`0x2d`) requesting a delayed 30-second 5V power cut-off.
 * **Stationary Safety Interlock:** Prevents accidental shutdown during active driving. The shutdown countdown initiates **only** when the robot is completely stationary ($v_x = 0, v_y = 0, \omega_z = 0$). Any joystick deflection or wheel movement immediately cancels the timer.
 * **Live I2C Battery Monitoring:** Continuous reading of battery percentage and voltage from the Waveshare UPS HAT via I2C (`smbus`), broadcasted to both the CLI dashboard and the remote web UI.
@@ -148,17 +154,17 @@ flowchart LR
 
 ---
 
-## 🧠 4. Core Software Nodes & Features (Escape Velocity V1.1.0)
+## 🧠 4. Core Software Nodes & Features (Escape Velocity V1.1.2)
 
 | Node / File | Primary Responsibility |
 |---|---|
-| **`mecanum_joy_teleop.py`** | Central command node. Ingests raw `/joy` inputs, performs deadzone filtering, executes 4-wheel **Inverse Kinematics**, manages PTZ Camera angles, displays a CLI dashboard, and publishes `/wheel_speeds`. Includes a **Graceful Hardware Shutdown** safety interlock (holding L1 + R1 for 5s) to safely power off the OS and schedule UPS HAT 5V cut-off. |
-| **`serial_controller.py`** | High-speed, robust serial gateway to ESP32. Formats wheel commands into delimited ASCII packets (`<M1,M2,M3,M4,Vacuum,Yaw,Pitch>`) and controls the Vacuum Relay. |
-| **`camera_firebase_manager.py`** | Native Python camera state manager. Provides an **On-Demand Local MJPEG FPV Stream** (Flask on Port 5000) using `rpicam-vid` with Hardware ISP Flipping and a **Modern OpenCV HUD Overlay** (Parking Guidelines, Crosshair, Telemetry). Handles high-res image capture, resource locking, Base64 compression, and **Firebase RTDB uploads**. Features **FIFO Storage Quota (Max 50 images)** and an **Offline Queue (`pending_uploads.json`)** with automatic background cloud sync. |
+| **`mecanum_joy_teleop.py`** | Central command node. Ingests raw `/joy` inputs, performs deadzone filtering, executes 4-wheel **Inverse Kinematics**, manages PTZ Camera angles, displays a CLI dashboard, and publishes `/wheel_speeds`. Includes **Emergency Brake (E-Stop Toggle)**, **Camera Recenter with Offset (L3)**, **Gamepad Auto-Detection** (Xbox 360 vs PS4), and **Graceful Hardware Shutdown** (`L1 + R1` 5s hold). |
+| **`serial_controller.py`** | High-speed, robust serial gateway to ESP32. Formats wheel commands into delimited ASCII packets (`<M1,M2,M3,M4,Vacuum,Yaw,Pitch>`) with auto-reconnection and port auto-detection (`/dev/ttyACM*`, `/dev/ttyUSB*`). |
+| **`camera_firebase_manager.py`** | Native Python camera state manager. Provides **WebRTC Live FPV Streaming (MediaMTX WHEP on Port 8889)**, **Dual Capture Mode** (`STREAM_GRAB` & `HARDWARE_STILL`), **Deep Learning RapidOCR (ONNX)** with **HSV Multi-Meter Segmentation**, and **Lean Firebase RTDB Split Uploads**. Enforces FIFO quota (max 50 images) and offline auto-sync. |
 | **`websocket_telemetry_funnel.py`** | Real-time monitoring server **and hardware monitor**. Broadcasts system status, motor speeds, and reads **UPS HAT battery via I2C (`smbus`)**. It feeds data to the Web UI via WebSockets (Tailscale Funnel) and publishes `/battery_percent` back to the CLI dashboard. |
 | **`audio_feedback_manager.py`** | **[CURRENTLY UNDER MAINTENANCE]** Headless status notifier. Uses `aplay` to play auditory cues for state transitions. |
 | **`robot_core.launch.py`** | Automated orchestration. Brings up all core nodes, parameter configurations, and serial connections in a single command. |
-| **`setup_wifi.py` & `startup_network.sh`** | **Headless Wi-Fi Captive Portal**. A systemd-enabled networking utility. On boot without internet, it spawns an AP Hotspot and a mobile-friendly Flask web UI to easily switch Wi-Fi networks in the field. |
+| **`setup_wifi.py` & `startup_network.sh`** | **Headless Wi-Fi Captive Portal**. Spawns an AP Hotspot and mobile-friendly Flask web UI to easily switch Wi-Fi networks in the field without monitor/keyboard. |
 
 ---
 
@@ -182,7 +188,8 @@ flowchart LR
 ---
 
 ## 🚀 6. Future Roadmap
-* **Vision & Object Detection (OCR):** Integrating OpenCV into the camera manager pipeline to read meter numbers before Firebase upload (Semester 2).
+* **[COMPLETED in V1.1.2] Vision & Object Detection (OCR):** Integrated RapidOCR ONNX Runtime with HSV multi-meter segmentation and Firebase RTDB split uploads.
+* **[COMPLETED in V1.1.2] WebRTC Streaming:** Migrated from MJPEG to MediaMTX WHEP for sub-second FPV latency.
 * **Full Autonomous Mode:** Developing the logic to transition from human-controlled `/joy` input to AI-driven navigation based on detected waste.
 * **Closed-Loop Speed Control:** Adding PID velocity control using quadrature encoders on the ESP32.
 
@@ -192,6 +199,8 @@ flowchart LR
 
 ```text
 ros2_ws/
+├── CHANGELOG.md                   # Full release history and version logs
+├── whep_client_demo.html          # WebRTC WHEP HTML5 video player demo
 ├── scripts/
 │   ├── setup_wifi.py              # Flask Wi-Fi Captive Portal UI
 │   ├── startup_network.sh         # Network check & Hotspot boot script
@@ -207,8 +216,8 @@ ros2_ws/
 │       ├── UPS_HAT_E/                     # UPS Battery hardware scripts & utilities
 │       ├── robot_control/                 # Python module source
 │       │   ├── audio_feedback_manager.py  # [MAINTENANCE] Event-based audio playback node
-│       │   ├── camera_firebase_manager.py # Flask FPV Stream & Firebase Integration
-│       │   ├── mecanum_joy_teleop.py      # Core teleoperation & CLI Dashboard
+│       │   ├── camera_firebase_manager.py # WebRTC WHEP FPV Stream, RapidOCR & Firebase RTDB
+│       │   ├── mecanum_joy_teleop.py      # Core teleoperation, E-Stop, Recenter & CLI Dashboard
 │       │   ├── serial_controller.py       # USB-Serial ESP32 communication gateway
 │       │   ├── websocket_telemetry_funnel.py # Tailscale Funnel WS & I2C Battery node
 │       │   └── WebSp.md                   # Web dashboard UI source code
