@@ -48,20 +48,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.1] - 2026-09-22
+## [1.1.1] - 2026-10-14
 
-### ⚡ Added & Improved
-- **Graceful Hardware Shutdown**: Holding `L1 + R1` for 5s while stationary safely flushes filesystem buffers (`sync`), commands Waveshare UPS HAT (`0x2d`) to delay 5V cut-off by 30s, and executes OS poweroff.
-- **Serial Auto-Detection & Recovery**: Added `find_esp32_port()` to dynamically detect `/dev/ttyACM*` or `/dev/ttyUSB*` with automatic reconnection on disconnect.
-- **Live Battery Monitoring**: Continuous reading of Waveshare UPS HAT battery percentage via I2C (`smbus`).
+### ✨ Added
+- **On-Device Deep Learning Meter OCR (RapidOCR / ONNX Runtime)**: Integrated an on-device PP-OCRv4 deep learning inference engine via `rapidocr_onnxruntime` and `onnxruntime` optimized for ARM64 (Raspberry Pi 5 / Cortex-A76), achieving sub-second (~0.5s) meter number extraction directly from camera captures without external cloud dependencies.
+- **Intelligent Digit Normalization & Spatial Deduplication**: Added character confusion mapping (e.g., `'O'/'o' -> '0'`, `'I'/'l' -> '1'`, `'Z' -> '2'`, `'S' -> '5'`) and Non-Maximum Suppression (NMS) containment filtering to eliminate overlapping ghost text boxes while strictly preserving left-to-right digit reading order.
+- **Visual Character HUD Highlights**: Overlaid individual yellow polygon bounding boxes around each detected digit alongside the primary green ROI target border and detected reading readout directly on the captured JPEG.
+- **Dynamic Serial Port Auto-Discovery & Hotplug Auto-Reconnect**: Enhanced `SerialController` to automatically discover and bind the active ESP32-S3 interface across both CDC-ACM (`/dev/ttyACM*`) and traditional USB-UART (`/dev/ttyUSB*`) ports based on USB VID/PID, coupled with a throttled auto-reconnect routine that seamlessly recovers if the USB cable is unplugged or power-cycled.
+- **Live Hardware Link Telemetry**: Added live `ESP32 Link : [ CONNECTED (<port>) ]` status readouts to the CLI dashboard and updated the WebSocket telemetry funnel to accurately report ESP32 online state on `/dev/ttyACM*`.
+- **Zero-Friction Open Wi-Fi Provisioning**: Updated `startup_network.sh` to broadcast `Mecanum_Setup` as an unencrypted Open Access Point, enabling field operators to tap and connect immediately from any mobile device without entering a password.
+- **Pitch-Aware Smart Autofocus Range Selection**: Dynamically selects macro or normal autofocus range based on the camera tilt angle.
+
+### 🐛 Fixed
+- **Fixed Native PaddlePaddle ARM64 Segfault**: Replaced the crashing native PaddlePaddle C++ backend on Cortex-A76 with an ONNX Runtime engine, permanently resolving runtime crashes (`SIGSEGV`) and `show_log` argument deprecation errors.
+- **Fixed Monotonic Image Sequence Numbering**: Resolved the repeating filename index bug (where `img_0051_...` repeated indefinitely once the 50-file FIFO ceiling was reached) by replacing array length counting with a persistent state counter (`.image_counter`) and regex-based filename inspection.
+- **Hotspot Connection Cleanup**: Ensured temporary AP profiles are cleanly torn down and deleted upon completing Wi-Fi provisioning so the network device seamlessly transitions back to station mode.
 
 ---
 
-## [1.1.0] - 2026-09-15
+## [1.1.0] - 2026-10-12
 
-### 🤖 Initial Release (Escape Velocity)
+### ✨ Added
+- **Boot-to-Run Systemd Autostart**: Automated startup on boot via `robot-core.service` and the one-step installer script `scripts/install_autostart.sh`.
+- **Developer Bash Aliases**: High-productivity shell command shortcuts (`robot-log`, `robot-status`, `robot-restart`, `robot-stop`, `robot-start`) for live dashboard inspection and service management.
+- **Offline Resilient Photo Queue & Cloud Auto-Sync**: Local caching and serialization queue (`pending_uploads.json`) with an asynchronous background worker that auto-syncs captured images to Firebase RTDB once network connectivity is restored.
+- **Graceful Hardware Shutdown & Stationary Safety Interlock**: Gamepad-triggered safe shutdown (`L1 + R1` held for 5 seconds while strictly stationary), issuing an I2C delayed 5V power cut-off command to the Waveshare UPS HAT followed by OS poweroff.
+- **Headless Wi-Fi Captive Portal**: Dynamic hotspot fallback (`Mecanum_Setup`) and a mobile-friendly Flask web portal (`setup_wifi.py`) for field network provisioning without peripherals.
 - **4-Wheel Mecanum Omnidirectional Locomotion**: Inverse kinematics with speed scaling (25%, 50%, 75%, 100%).
 - **On-Demand Camera System**: High-resolution image capture with hardware ISP 180° image rotation.
-- **Offline Upload Queue**: Local storage quota (FIFO max 50 images) and automatic offline sync (`pending_uploads.json`).
-- **Headless Wi-Fi Captive Portal**: AP hotspot (`Mecanum_Setup`) with mobile web setup UI.
 - **Tailscale Mesh Networking**: Telemetry and control access over WAN via Tailscale Funnel.
+
+### 🔧 Improved & Optimized
+- **Unified ROS 2 Launch Orchestration**: Merged `websocket_telemetry_funnel` directly into `robot_core.launch.py` to start the entire robot stack from a single launch command.
+- **OpenCV HUD Real-Time Overlay**: Enhanced FPV stream with parking distance guidelines (0–60 cm), target crosshair, pan/tilt gimbal angle readouts, and visual capture notifications.
+- **Zero-CPU Hardware ISP Flipping**: Offloaded 180° image rotation directly to the Raspberry Pi's Hardware Image Signal Processor (ISP).
+- **Multi-Distro ROS 2 Compatibility**: Extended deployment compatibility to both Ubuntu 22.04 LTS (Humble) and Ubuntu 24.04 LTS (Jazzy).
