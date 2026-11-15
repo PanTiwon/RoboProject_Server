@@ -1,4 +1,4 @@
-# 🤖 Teleoperated Waste Collection Robot (Escape Velocity V1.1.2)
+# 🤖 Teleoperated Waste Collection Robot (V1.1.2 Escape Velocity )
 
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble%20%2F%20Jazzy-blue.svg)](https://docs.ros.org/)
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20ESP32-green.svg)](#)
