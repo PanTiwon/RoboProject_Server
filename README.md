@@ -9,7 +9,22 @@
 [![Storage](https://img.shields.io/badge/Storage-FIFO%2050%20Img%20%7C%20Offline%20Queue-orange.svg)](#)
 [![License](https://img.shields.io/badge/License-Apache--2.0-lightgrey.svg)](LICENSE)
 
-A modular, distributed robotics software stack for a 4-wheel Mecanum waste collection robot. Built on **ROS 2**, the **Escape Velocity V1.1.2** release features ultra-low-latency **WebRTC (WHEP)** FPV streaming via **MediaMTX**, Deep Learning **RapidOCR (ONNX)** with automated HSV multi-meter segmentation and split uploads, gamepad **Emergency Brake (E-Stop Toggle)**, one-touch **Camera Recenter (L3)** with hardware offset, and an optimized, lean **Firebase Realtime Database (RTDB)** cloud pipeline.
+A modular, distributed robotics software stack for a 4-wheel Mecanum utility and waste collection robot. Built on **ROS 2**, the **v1.1.2 'Escape Velocity'** release features ultra-low-latency **WebRTC (WHEP)** FPV streaming via **MediaMTX**, Deep Learning **RapidOCR (ONNX)** with automated HSV multi-meter segmentation and split uploads, gamepad **Emergency Brake (E-Stop Toggle)**, one-touch **Camera Recenter (L3)** with hardware offset, and an optimized, lean **Firebase Realtime Database (RTDB)** cloud pipeline.
+
+<p align="center">
+  <img src="docs/images/robot_hero.jpg" alt="Escape Velocity Robot Full View" width="85%">
+  <br>
+  <em>Custom aluminum chassis featuring 4-wheel Mecanum drive, Pan-Tilt camera module, active vacuum system, and dual-board compute architecture.</em>
+</p>
+
+---
+
+## 🖼️ Hardware & Vision Showcase
+
+| Dual-Board Compute & Actuation | Real-Time FPV HUD Stream (WebRTC) | RapidOCR & HSV Meter Segmentation |
+| :---: | :---: | :---: |
+| <img src="docs/images/hardware_dual_board.jpg" width="100%" alt="Hardware Setup"> | <img src="docs/images/fpv_hud_stream.jpg" width="100%" alt="FPV HUD Stream"> | <img src="docs/images/ocr_meter_result.jpg" width="100%" alt="RapidOCR Result"> |
+| *Raspberry Pi 5 + ESP32 + Waveshare UPS HAT with isolated power supply* | *Sub-second WHEP streaming with OpenCV parking guidelines & crosshair* | *Automated HSV blue-box isolation & ONNX 4-digit meter recognition* |
 
 ---
 
@@ -98,7 +113,7 @@ flowchart LR
     subgraph Outputs ["Hardware & UI Layer"]
         ESP32["ESP32 Driver\n(M1-M4 PWM + Vacuum)"]
         AudioOut["aplay\n(Local Audio Jack)"]
-        CameraOut["FPV Flask Stream\n(Port 5000) & Firebase"]
+        CameraOut["FPV Stream (Port 8889/5000)\n& Firebase RTDB"]
         Dashboard["Web UI Dashboard\n(Browser)"]
         UPS["UPS HAT\n(I2C)"]
     end
@@ -125,14 +140,14 @@ flowchart LR
 One of the core challenges in this project was enabling remote teleoperation and dashboard monitoring across different physical locations and ISPs without modifying router port-forwarding rules. To solve this, the system integrates **Tailscale** for secure overlay networking:
 
 * **Tailscale Mesh VPN:** Connects the Raspberry Pi and the operator's PC into the same secure private network, regardless of their physical locations.
-* **Tailscale Funnel:** Used to securely expose both the WebSocket server (`websocket_telemetry_funnel.py`) and the Flask FPV Camera stream to the public internet without exposing the whole device.
+* **Tailscale Funnel:** Used to securely expose both the WebSocket server (`websocket_telemetry_funnel.py`) and the FPV Camera stream to the public internet without exposing the whole device.
 
 ```mermaid
 flowchart LR
     subgraph Robot_Environment ["Robot Network (Location A)"]
         Pi["Raspberry Pi\n(ROS 2 Core)"]
         WSS["WebSocket Server\n(Port 8080)"]
-        Flask["Camera Server\n(Port 5000)"]
+        Flask["Camera Server\n(Port 8889 / 5000)"]
         TailscaleClient["Tailscale Daemon"]
         
         Pi --> WSS
@@ -155,7 +170,7 @@ flowchart LR
 
 ---
 
-## 🧠 4. Core Software Nodes & Features (Escape Velocity V1.1.2)
+## 🧠 4. Core Software Nodes & Features (v1.1.2 'Escape Velocity')
 
 | Node / File | Primary Responsibility |
 |---|---|
@@ -178,9 +193,9 @@ flowchart LR
 3. **Decoupled ESP32 Serial Actuation:**
    * Linux on a Raspberry Pi is a Non-Real-Time OS. Offloading PWM signal generation and Relay triggering to the ESP32 ensures zero jitter on high-power motor drivers, maintaining smooth locomotion.
 4. **On-Demand Camera Resource Management:**
-   * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle, it temporarily spawns an MJPEG Flask server via `rpicam-vid`. When a high-res photo is requested, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
+   * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle, it temporarily spawns an active stream. When a high-res photo is requested in `HARDWARE_STILL` mode, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
 5. **Headless Wi-Fi Setup for Field Deployment (Dynamic Configuration):**
-   * Field testing often involves unknown network environments where SSH or external monitors are unavailable. The `startup_network.sh` boot script uses `nmcli` to ping for internet access on boot. If it fails, it instantly broadcasts an AP Hotspot (Mecanum_Setup). Operators can connect via their smartphones to access the `setup_wifi.py` Flask portal, allowing them to enter new Wi-Fi credentials on the fly. This guarantees immediate, seamless network switching when migrating the robot between locations.
+   * Field testing often involves unknown network environments where SSH or external monitors are unavailable. The `startup_network.sh` boot script uses `nmcli` to ping for internet access on boot. If it fails, it instantly broadcasts an AP Hotspot (`Mecanum_Setup`). Operators can connect via their smartphones to access the `setup_wifi.py` Flask portal, allowing them to enter new Wi-Fi credentials on the fly. This guarantees immediate, seamless network switching when migrating the robot between locations.
 6. **Graceful Hardware Shutdown & Safety Interlock:**
    * Abruptly cutting DC power via a physical toggle switch risks corrupted file systems on the Raspberry Pi's SD card / NVMe storage. To prevent data corruption in the field, we introduced a gamepad-driven shutdown sequence: holding **L1 + R1 (Left & Right Bumpers) for 5 continuous seconds** while the robot is **completely stationary** (Safety Interlock: all wheel velocities and directional inputs $v_x, v_y, \omega_z$ must remain 0). Releasing the buttons or moving the robot immediately cancels the timer. Upon countdown completion, the node issues an I2C command to the Waveshare UPS HAT (`0x2d`) requesting a delayed 5V power cut-off in 30 seconds (`sudo i2cset -y 1 0x2d 0x01 0x55`), immediately followed by an OS-level graceful powerdown (`sudo poweroff`), allowing all file buffers to sync before power is removed.
 7. **Local Storage FIFO Quota & Offline Resilient Cloud Sync:**
@@ -189,9 +204,9 @@ flowchart LR
 ---
 
 ## 🚀 6. Future Roadmap
-* **[COMPLETED in V1.1.2] Vision & Object Detection (OCR):** Integrated RapidOCR ONNX Runtime with HSV multi-meter segmentation and Firebase RTDB split uploads.
-* **[COMPLETED in V1.1.2] WebRTC Streaming:** Migrated from MJPEG to MediaMTX WHEP for sub-second FPV latency.
-* **Full Autonomous Mode:** Developing the logic to transition from human-controlled `/joy` input to AI-driven navigation based on detected waste.
+* **[COMPLETED in v1.1.2] Vision & Object Detection (OCR):** Integrated RapidOCR ONNX Runtime with HSV multi-meter segmentation and Firebase RTDB split uploads.
+* **[COMPLETED in v1.1.2] WebRTC Streaming:** Migrated from MJPEG to MediaMTX WHEP for sub-second FPV latency.
+* **Full Autonomous Mode (v2.0 Milestone):** Developing the logic to transition from human-controlled `/joy` input to AI-driven navigation based on detected waste and visual markers.
 * **Closed-Loop Speed Control:** Adding PID velocity control using quadrature encoders on the ESP32.
 
 ---
@@ -202,6 +217,12 @@ flowchart LR
 ros2_ws/
 ├── CHANGELOG.md                   # Full release history and version logs
 ├── whep_client_demo.html          # WebRTC WHEP HTML5 video player demo
+├── docs/
+│   └── images/                    # Project showcase photos & system screenshots
+│       ├── robot_hero.jpg
+│       ├── hardware_dual_board.jpg
+│       ├── fpv_hud_stream.jpg
+│       └── ocr_meter_result.jpg
 ├── scripts/
 │   ├── setup_wifi.py              # Flask Wi-Fi Captive Portal UI
 │   ├── startup_network.sh         # Network check & Hotspot boot script
@@ -307,7 +328,7 @@ Once the system is running, you can monitor the robot remotely:
 * The stream defaults to **OFF** to save bandwidth and battery. 
 * Press the **Start** button on your gamepad to toggle the stream **ON**.
 * The stream features an advanced **OpenCV HUD Overlay** (Parking Guidelines, Crosshair, and Real-time Servo Angles).
-* **Local Network:** `http://<RASPBERRY_PI_IP>:5000`
+* **Local Network:** `http://<RASPBERRY_PI_IP>:5000` (or Port `8889` for MediaMTX WHEP)
 * **Public Internet (Tailscale Funnel):** `https://core.tailb47df1.ts.net:8443` (Maps to 5000 locally).
 
 ---
