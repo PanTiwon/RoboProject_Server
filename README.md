@@ -26,6 +26,13 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 | <img src="docs/images/hardware_dual_board.jpg" width="100%" alt="Hardware Setup"> | <img src="docs/images/fpv_hud_stream.png" width="100%" alt="FPV HUD Stream"> | <img src="docs/images/ocr_meter_result.jpg" width="100%" alt="RapidOCR Result"> |
 | *Raspberry Pi 5 + ESP32 + Waveshare UPS HAT with isolated power supply* | *Sub-second WHEP streaming with OpenCV parking guidelines & crosshair* | *Automated HSV blue-box isolation & ONNX 4-digit meter recognition* |
 
+### 🌐 End-to-End Web Applications (Tenant & Juristic Admin)
+
+| Tenant Self-Service Portal (`sabaidorm`) | Juristic Admin Dashboard (`REFUSE-01`) |
+| :---: | :---: |
+| <img src="docs/images/tenant_portal.png" width="100%" alt="Tenant Self-Service Portal"> | <img src="docs/images/admin_dashboard.png" width="100%" alt="Juristic Admin Dashboard"> |
+| *Real-time room-based utility lookup (`A101`–`A108`), automated monthly electricity/water billing calculation, and photographic meter verification.* | *Firebase Auth protected management console for room tagging (`ROOM TAG`), OCR manual override (`NEEDS INPUT` / `EDIT` / `DELETE`), dynamic rate configuration, and record verification (`VERIFIED`).* |
+
 ---
 
 ## ✨ Key Features & System Highlights
@@ -63,37 +70,41 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 * **Deterministic Gamepad Polling:** Configured `joy_node` with continuous 20 Hz autorepeat (`autorepeat_rate: 20.0`, `deadzone: 0.05`, `coalesce_interval_ms: 1`), ensuring zero command starvation between the gamepad driver and the Mecanum kinematics engine.
 * **Decoupled ESP32 Gateway:** High-speed USB-Serial bridge isolating high-current motor PWM drivers and the vacuum relay from the Raspberry Pi host.
 
+### 🖥️ 6. Role-Based Web Portals & Firebase Security
+* **Tenant Utility Portal (`sabaidorm`):** Responsive self-service web application allowing dormitory residents to filter by `room_id` (`A101`–`A108`) and billing month to view electricity and water meter units, automated cost breakdowns, and Base64 photographic evidence. To maintain data privacy, the portal strictly queries records with `status: "verified"`.
+* **Juristic Admin Dashboard (`REFUSE-01`):** Enterprise management console for building staff to monitor incoming RTDB meter feeds in real time, configure utility rates (THB/unit), assign unassigned captures to rooms (`ROOM TAG`), manually input or correct OCR misreads (`NEEDS INPUT` / `EDIT` / `DELETE`), and approve records for tenant publication (`VERIFIED`).
+* **Firebase Authentication & Security Rules:** All administrative write, update, and delete operations on Firebase Realtime Database (`roboproject1-a9c63`) are gated behind **Firebase Authentication (Email/Password)** and strictly enforced via **Firebase RTDB Security Rules** (validating authenticated UIDs against the `/admins` whitelist node), preventing unauthorized tampering with billing data.
+
 ---
 
 ## 📌 1. System Architecture Overview
 
-The system follows a distributed compute model, decoupling high-level compute and networking (Raspberry Pi) from real-time motor actuation (ESP32):
+The system follows a distributed compute model, decoupling high-level compute and networking (Raspberry Pi) from real-time motor actuation (ESP32), while synchronizing meter readings to Firebase Realtime Database (`roboproject1-a9c63`) for downstream consumption by role-based web portals:
 
 ```text
-+-----------------------------------------------------------------------------------+
-|                                  USER / OPERATOR                                  |
-|         [ Game Controller ]                     [ Web Dashboard (WebSp) ]         |
-+------------------+------------------------------------------+---------------------+
-                   |                                          ^
-                   | (Bluetooth / USB)                        | (WebSocket / HTTPS)
-                   V                                          |
-+-------------------------------------------------------------+---------------------+
-|                      RASPBERRY PI (ROS 2 Compute Brain)                           |
-|                                                                                   |
-|   [/joy] ----> [ mecanum_joy_teleop ] ----> [/wheel_speeds]                       |
-|                       |                             |                             |
-|                       | (kinematics.py)             v                             |
-|                       |                     [ serial_controller ]                 |
-|                       v                             |                             |
-|             [ audio_feedback_manager ]              | (USB Serial / 115200 Baud)  |
-|                       |                             v                             |
-|                       | (aplay *.wav)     +-----------------------------------+   |
-|                       v                   |             ESP32                 |   |
-|                 [ Speaker ]               | (PWM Actuation & Vacuum Relay)    |   |
-+-------------------------------------------+-----------------+-----------------+---+
-                                                              |
-                                                              V
-                                              [ Motor Drivers & Actuators ]
++-------------------------------------------------------------------------------------------------------------------------------+
+|                                                USERS, OPERATORS & TENANTS                                                     |
+|  [ Gamepad ]        [ Telemetry Dashboard ]           [ Tenant Portal (sabaidorm) ]       [ Juristic Admin Dashboard ]        |
++------+-------------------------+------------------------------------+-----------------------------------+---------------------+
+       |                         ^                                    ^                                   ^
+       | (2.4GHz / USB)          | (WebSocket / HTTPS)                | (Public Read: 'verified' only)    | (Auth Read / Write)
+       V                         |                                    |                                   |
++--------------------------------+----------------------------+       |                                   |
+|             RASPBERRY PI (ROS 2 Compute Brain)              |       |                                   |
+|                                                             |       |                                   |
+|  [/joy] -> [ mecanum_joy_teleop ] -> [/wheel_speeds]        |       |                                   |
+|                  |                         |                |       |                                   |
+|                  | (kinematics)            v                |       |                                   |
+|                  |                 [ serial_controller ]    |       |                                   |
+|                  v                         |                |       |                                   |
+|       [ camera_firebase_manager ]          | (USB Serial)   |       |                                   |
+|                  |                         v                |       |                                   |
+|                  | (HTTPS REST)     +--------------------+  |       |                                   |
+|                  v                  |       ESP32        |  |       |                                   |
+|      +------------------------+     | (M1-M4 PWM/Vacuum) |  |       |                                   |
+|      |     Firebase RTDB      |-----+--------------------+--+       |                                   |
+|      |  (roboproject1-a9c63)  |-------------------------------------+-----------------------------------+
+|      +------------------------+
 ```
 
 ---
@@ -109,32 +120,42 @@ flowchart LR
     subgraph Core ["robot_control Package"]
         Teleop["mecanum_joy_teleop\n(Kinematics & Logic)"]
         SerialNode["serial_controller\n(ESP32 Gateway)"]
-        CameraNode["camera_firebase_manager\n(On-Demand Stream & Capture)"]
-        AudioNode["audio_feedback_manager\n[UNDER MAINTENANCE]"]
+        CameraNode["camera_firebase_manager\n(FPV Stream, RapidOCR & Cloud Sync)"]
+        AudioNode["audio_feedback_manager\n(Event Audio Cues)"]
         TelemetryNode["websocket_telemetry_funnel\n(Web Server & I2C Battery)"]
     end
 
-    subgraph Outputs ["Hardware & UI Layer"]
+    subgraph Outputs ["Hardware & Robot UI"]
         ESP32["ESP32 Driver\n(M1-M4 PWM + Vacuum)"]
         AudioOut["aplay\n(Local Audio Jack)"]
-        CameraOut["FPV Stream (Port 8889/5000)\n& Firebase RTDB"]
-        Dashboard["Web UI Dashboard\n(Browser)"]
-        UPS["UPS HAT\n(I2C)"]
+        FPVOut["FPV WebRTC Stream\n(Port 8889 / 5000)"]
+        Dashboard["Telemetry Dashboard\n(Browser / Funnel)"]
+        UPS["UPS HAT\n(I2C 0x2d)"]
+    end
+
+    subgraph Cloud ["Cloud & Downstream Portals"]
+        FirebaseRTDB[("Firebase RTDB\n(roboproject1-a9c63)")]
+        TenantPortal["Tenant Portal (sabaidorm)\n[Public Read: 'verified' records only]"]
+        AdminDashboard["Juristic Admin Dashboard (REFUSE-01)\n[Authenticated R/W via Firebase Auth + /admins Rules]"]
     end
 
     JoyNode -->|/joy| Teleop
     Teleop -->|/wheel_speeds| SerialNode
     Teleop -->|/robot/mode, /audio/mute| AudioNode
     Teleop -->|/telemetry| TelemetryNode
-    Teleop -->|Joy Start/Action 1| CameraNode
+    Teleop -->|Joy Start / Action 1| CameraNode
     
-    UPS["UPS HAT"] -->|"I2C (0x2d)"| TelemetryNode
+    UPS -->|"I2C (0x2d)"| TelemetryNode
     TelemetryNode -->|/battery_percent| Teleop
 
     SerialNode -->|Serial <M1,M2,M3,M4,Vacuum,Yaw,Pitch>| ESP32
     AudioNode --> AudioOut
-    CameraNode --> CameraOut
+    CameraNode -->|WHEP / HTTP| FPVOut
+    CameraNode -->|REST Split Uploads| FirebaseRTDB
     TelemetryNode --> Dashboard
+
+    FirebaseRTDB -->|Query: status == 'verified'| TenantPortal
+    FirebaseRTDB <-->|Firebase Auth & /admins UID Whitelist| AdminDashboard
 ```
 
 ---
@@ -232,7 +253,11 @@ ros2_ws/
 ├── LICENSE                        # Apache-2.0 License
 ├── docs/
 │   ├── images/                    # Project showcase photos & system screenshots
-│   │   └── placeholder.txt
+│   │   ├── fpv_hud_stream.png     # Real-time WebRTC FPV stream HUD overlay
+│   │   ├── hardware_dual_board.jpg# Raspberry Pi 5 + ESP32 dual compute architecture
+│   │   ├── ocr_meter_result.jpg   # RapidOCR & HSV blue-box isolation result
+│   │   ├── tenant_portal.png      # SabaiDorm tenant utility self-service portal
+│   │   └── admin_dashboard.png    # REFUSE-01 juristic management console
 │   └── WebSp.md                   # Web telemetry dashboard client specification
 ├── scripts/
 │   ├── setup_wifi.py              # Flask Wi-Fi Captive Portal UI
@@ -348,6 +373,14 @@ Once the system is running, you can monitor the robot remotely:
 * The stream features an advanced **OpenCV HUD Overlay** (Parking Guidelines, Crosshair, and Real-time Servo Angles).
 * **Local Network:** `http://<RASPBERRY_PI_IP>:5000` (or Port `8889` for MediaMTX WHEP)
 * **Public Internet (Tailscale Funnel):** `https://core.tailb47df1.ts.net:8443` (Maps to 5000 locally).
+
+**3. Tenant Self-Service Portal (`sabaidorm`)**
+* Access the tenant utility portal: **[🔗 SabaiDorm Tenant Portal](https://<TENANT_PORTAL_URL>.netlify.app/)**
+* **Public Access:** Allows residents to look up rooms (`A101`–`A108`), view monthly electricity/water billing calculations, and inspect photographic meter evidence. Strictly queries records approved with `status: "verified"`.
+
+**4. Juristic Admin Management Console (`REFUSE-01`)**
+* Access the staff management console: **[🔗 REFUSE-01 Juristic Admin](https://<ADMIN_DASHBOARD_URL>.netlify.app/)**
+* **Role-Based Security:** Gated behind **Firebase Authentication (Email/Password)**. Requires user UID whitelisting in the `/admins` node of Firebase RTDB (`roboproject1-a9c63`) to perform room tagging (`ROOM TAG`), OCR manual overrides (`NEEDS INPUT` / `EDIT` / `DELETE`), rate configuration, and record approvals (`VERIFIED`).
 
 ---
 
