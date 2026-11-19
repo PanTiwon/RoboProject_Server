@@ -37,6 +37,12 @@ fi
 export PYTHONUNBUFFERED=1
 export RCUTILS_COLORIZED_OUTPUT=1
 
+# Force ROS 2 DDS to stay strictly on the local machine (loopback).
+# This prevents external Wi-Fi networks (AP multicast drop, IGMP snooping, DHCP changes)
+# and Tailscale from breaking inter-node communication between joy_node and mecanum_joy_teleop.
+export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export ROS_DOMAIN_ID=0
+
 # 4. Launch Full Stack
 echo "[start_ros2] Launching robot_core.launch.py..."
 exec ros2 launch robot_control robot_core.launch.py

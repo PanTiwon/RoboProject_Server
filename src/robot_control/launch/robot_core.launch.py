@@ -7,7 +7,12 @@ def generate_launch_description():
         Node(
             package='joy',
             executable='joy_node',
-            name='joy_node'
+            name='joy_node',
+            parameters=[{
+                'autorepeat_rate': 20.0,
+                'deadzone': 0.05,
+                'coalesce_interval_ms': 1,
+            }]
         ),
         
         # 2. Start our custom Mecanum Teleop node (Handles ESP32 serial & CLI dashboard)

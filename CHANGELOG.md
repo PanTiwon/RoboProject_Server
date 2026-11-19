@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.3] - 2026-11-19
+
+### 🚀 Highlights
+- **Isolated DDS Localhost Loopback**: Fixed joystick control dropouts when connected to Wi-Fi by strictly locking ROS 2 DDS communication to localhost (`127.0.0.1`), completely eliminating router UDP multicast drops.
+- **Web-Triggered FPV Auto-Activation & REST APIs**: WebRTC FPV streaming now starts automatically whenever an operator opens the web dashboard, with full REST API control (`/api/stream/start`, `/api/stream/stop`, `/api/stream/status`).
+- **Hardware Capture Timeout & Lock Recovery**: Added an active 3.5s timeout with automatic cleanup to `rpicam-still` subprocess execution, preventing camera driver hangs.
+- **Audio Feedback Path Alignment**: Relocated system feedback sounds to `src/robot_control/media/`, eliminating missing file warnings on system boot.
+- **Repository Clean Architecture**: Modularized directory tree by separating web UI, legacy prototypes, and vendor hardware scripts into dedicated `web/`, `legacy/`, `tools/`, and `docs/` folders.
+
+### 🛡️ Network & ROS 2 DDS Isolation
+- **Localhost Loopback (`start_ros2.sh`)**: Added `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and `ROS_DOMAIN_ID=0` to environment configuration. Local nodes communicate through memory loopback, ensuring uninterrupted 2.4GHz gamepad control during Wi-Fi connectivity, roaming, or DHCP IP assignment.
+- **Deterministic Gamepad Polling (`robot_core.launch.py`)**: Configured `joy_node` with `autorepeat_rate: 20.0 Hz`, `deadzone: 0.05`, and `coalesce_interval_ms: 1` to guarantee smooth, starvation-free command streaming to `mecanum_joy_teleop`.
+
+### 🎥 Vision & WebRTC Streaming (`camera_firebase_manager.py`)
+- **Web-Triggered FPV Stream Auto-Activation**: Accessing `http://<ip>:5000/` automatically initiates the MediaMTX WebRTC stream without requiring manual gamepad input.
+- **Stream Management REST API**:
+  - `GET / POST /api/stream/start`: Remotely launches the MediaMTX video stream.
+  - `GET / POST /api/stream/stop`: Shuts down the stream to conserve compute resources.
+  - `GET /api/stream/status`: Returns current streaming state in JSON format.
+- **Dynamic Template Resolution**: Seamlessly loads `whep_client_demo.html` from `src/robot_control/web/` with fallback to workspace root.
+
+### 📸 Camera Subprocess Hardening
+- **Subprocess Execution Timeout**: Wrapped `rpicam-still` inside a 3.5s execution ceiling with timeout exception handling and orphan process cleanup (`pkill -9 -f rpicam-still`), ensuring the camera hardware is always released back to the live FPV stream.
+
+### 📁 Clean Architecture & Organization
+- **Media Asset Relocation**: Moved sound files from `asset/sound/` to `src/robot_control/media/`, matching `AudioFeedbackManager` default parameters and resolving the `Starting.wav` missing audio warning.
+- **Web Layer Isolation**: Moved `whep_client_demo.html` to `src/robot_control/web/` and `WebSp.md` to `docs/WebSp.md`.
+- **Legacy Code Archiving**: Relocated unmaintained scripts (`setup_portal.py`, `joy_to_esp32.py`, `kinematics.py`, `websocket_telemetry.py`) into `legacy/`.
+- **Vendor Tool Isolation**: Moved Waveshare UPS sample scripts from the ROS 2 package into `tools/UPS_HAT_E/`.
+- **Entry Point Cleanup (`setup.py`)**: Pruned obsolete console scripts to keep build targets clean and lightweight.
+- **Workspace Hygiene**: Cleaned empty directories (`assets/`, `asset/`).
+
+---
+
 ## [1.1.2] - 2026-10-16
 
 ### 🚀 Highlights

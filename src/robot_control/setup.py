@@ -26,9 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'joy_to_esp32 = robot_control.joy_to_esp32:main',
             'mecanum_joy_teleop = robot_control.mecanum_joy_teleop:main',
-            'websocket_telemetry = robot_control.websocket_telemetry:main',
             'websocket_telemetry_funnel = robot_control.websocket_telemetry_funnel:main',
             'audio_feedback_manager = robot_control.audio_feedback_manager:main',
         ],

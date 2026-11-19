@@ -12,7 +12,7 @@ import firebase_admin
 from firebase_admin import credentials, initialize_app, db
 
 # Flask imports for WebRTC FPV dashboard
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, render_template_string, request, jsonify
 import logging
 import json
 import uuid
@@ -74,10 +74,19 @@ _global_camera_manager = None
 
 @app.route('/')
 def index():
-    html_file = os.path.expanduser('~/ros2_ws/whep_client_demo.html')
-    if os.path.exists(html_file):
-        with open(html_file, 'r', encoding='utf-8') as f:
-            return f.read()
+    global _global_camera_manager
+    if _global_camera_manager is not None and not _global_camera_manager.is_streaming:
+        # Auto-activate MediaMTX WebRTC stream when client opens the web dashboard
+        _global_camera_manager.toggle_stream()
+
+    candidate_paths = [
+        os.path.expanduser('~/ros2_ws/src/robot_control/web/whep_client_demo.html'),
+        os.path.expanduser('~/ros2_ws/whep_client_demo.html'),
+    ]
+    for html_file in candidate_paths:
+        if os.path.exists(html_file):
+            with open(html_file, 'r', encoding='utf-8') as f:
+                return f.read()
     return render_template_string('''
         <html>
           <head><title>Robot FPV WebRTC</title></head>
@@ -90,6 +99,26 @@ def index():
           </body>
         </html>
     ''')
+
+@app.route('/api/stream/start', methods=['GET', 'POST'])
+def api_start_stream():
+    global _global_camera_manager
+    if _global_camera_manager is not None and not _global_camera_manager.is_streaming:
+        _global_camera_manager.toggle_stream()
+    return jsonify({"status": "success", "streaming": True})
+
+@app.route('/api/stream/stop', methods=['GET', 'POST'])
+def api_stop_stream():
+    global _global_camera_manager
+    if _global_camera_manager is not None and _global_camera_manager.is_streaming:
+        _global_camera_manager.toggle_stream()
+    return jsonify({"status": "success", "streaming": False})
+
+@app.route('/api/stream/status')
+def api_stream_status():
+    global _global_camera_manager
+    is_streaming = _global_camera_manager.is_streaming if _global_camera_manager else False
+    return jsonify({"streaming": is_streaming})
 
 @app.route('/video_feed')
 def video_feed():
@@ -734,21 +763,25 @@ class CameraFirebaseManager:
                     time.sleep(0.15)
 
                 af_range = "macro" if pitch_angle <= 0 else "normal"
-                self._log_info(f"Capturing: {filename} (Pitch: {pitch_angle:.1f}°, AF Range: {af_range}, Timeout: 600ms)...")
+                self._log_info(f"Capturing: {filename} (Pitch: {pitch_angle:.1f}°, AF Range: {af_range}, Timeout: 1000ms)...")
                 cmd = [
                     CAPTURE_COMMAND,
                     "-o", filepath,
                     "--autofocus-on-capture",
                     "--autofocus-range", af_range,
                     "--autofocus-window", "0.25,0.25,0.5,0.5",
-                    "--hdr", "sensor",
-                    "--timeout", "600",
+                    "--timeout", "1000",
                     "--nopreview"
                 ]
                 if FLIP_VIDEO:
                     cmd.extend(["--hflip", "--vflip"])
 
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                result = None
+                try:
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=3.5)
+                except subprocess.TimeoutExpired:
+                    self._log_error("rpicam-still timed out after 3.5s! Forcing cleanup to free camera...")
+                    os.system("pkill -9 -f rpicam-still 2>/dev/null || true")
 
                 # --- IMMEDIATE RE-LAUNCH: Resume MediaMTX stream immediately so FPV returns in < 1s ---
                 if was_streaming:
@@ -761,8 +794,9 @@ class CameraFirebaseManager:
                         except Exception as e:
                             self._log_error(f"Failed to re-launch MediaMTX: {e}")
 
-                if result.returncode != 0:
-                    self._log_error(f"Camera capture failed: {result.stderr}")
+                if result is None or result.returncode != 0:
+                    err_msg = result.stderr if result else "Capture subprocess timed out"
+                    self._log_error(f"Camera capture failed: {err_msg}")
                     return
 
                 self._log_info(f"Saved locally: {filepath}")

@@ -1,5 +1,5 @@
 # Teleoperated Utility & Meter-Reading Robot
-**Current System Release:** `v1.1.2 (Codename: "Escape Velocity")`
+**Current System Release:** `v1.1.3 (Codename: "Escape Velocity")`
 
 [![ROS 2](https://img.shields.io/badge/ROS_2-Humble%20%2F%20Jazzy-blue.svg)](https://docs.ros.org/)
 [![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi%205%20%7C%20ESP32-green.svg)](#)
@@ -9,7 +9,7 @@
 [![Storage](https://img.shields.io/badge/Storage-FIFO%2050%20Img%20%7C%20Offline%20Queue-orange.svg)](#)
 [![License](https://img.shields.io/badge/License-Apache--2.0-lightgrey.svg)](LICENSE)
 
-A modular, distributed robotics software stack for a 4-wheel Mecanum utility and waste collection robot. Built on **ROS 2**, the **v1.1.2 'Escape Velocity'** release features ultra-low-latency **WebRTC (WHEP)** FPV streaming via **MediaMTX**, Deep Learning **RapidOCR (ONNX)** with automated HSV multi-meter segmentation and split uploads, gamepad **Emergency Brake (E-Stop Toggle)**, one-touch **Camera Recenter (L3)** with hardware offset, and an optimized, lean **Firebase Realtime Database (RTDB)** cloud pipeline.
+A modular, distributed robotics software stack for a 4-wheel Mecanum utility and waste collection robot. Built on **ROS 2**, the **v1.1.3 'Escape Velocity'** release features **Isolated DDS Localhost Loopback** for zero-drop Wi-Fi teleoperation, on-demand **WebRTC (WHEP)** FPV streaming with web auto-activation, Deep Learning **RapidOCR (ONNX)** with automated HSV multi-meter segmentation and split uploads, gamepad **Emergency Brake (E-Stop Toggle)**, one-touch **Camera Recenter (L3)** with hardware offset, and an optimized, lean **Firebase Realtime Database (RTDB)** cloud pipeline.
 
 <p align="center">
   <img src="docs/images/robot_hero.jpg" alt="Escape Velocity Robot Full View" width="85%">
@@ -31,7 +31,9 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 ## ✨ Key Features & System Highlights
 
 ### 📸 1. Vision, Cloud Storage & Offline Resilience
-* **Ultra-Low-Latency WebRTC FPV Streaming (MediaMTX & WHEP):** Upgraded from MJPEG to standard WebRTC via MediaMTX broker, providing sub-second glass-to-glass latency on port 8889 (`/live/whep`). Includes a standalone HTML5 WebRTC demo player (`whep_client_demo.html`).
+* **Ultra-Low-Latency WebRTC FPV Streaming (MediaMTX & WHEP):** Upgraded from MJPEG to standard WebRTC via MediaMTX broker, providing sub-second glass-to-glass latency on port 8889 (`/live/whep`). Includes a standalone HTML5 WebRTC demo player (`src/robot_control/web/whep_client_demo.html`).
+* **Web-Triggered FPV Auto-Activation & REST APIs:** Accessing the FPV dashboard at `http://<pi_ip>:5000/` automatically initiates the MediaMTX WebRTC stream without requiring manual gamepad input. Includes remote REST control endpoints (`/api/stream/start`, `/api/stream/stop`, `/api/stream/status`).
+* **Subprocess Timeout & Camera Lock Recovery:** Protects high-resolution capture routines with an active 3.5s execution ceiling and automatic cleanup for `rpicam-still`, guaranteeing the camera hardware is always returned safely to the live FPV pipeline.
 * **Dual Capture Mode (Zero-Downtime vs High-Res Turbo):**
   * `STREAM_GRAB`: Instant zero-downtime capture directly from active MediaMTX RTSP stream without blacking out the FPV screen.
   * `HARDWARE_STILL`: High-resolution photo capture with sensor HDR and instant stream re-launch (< 1s).
@@ -52,11 +54,13 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 * **Developer Bash Aliases:** Includes high-productivity aliases (`robot-log`, `robot-status`, `robot-restart`, `robot-stop`, `robot-start`) for immediate live dashboard monitoring and service control from any terminal session.
 
 ### 📡 4. Field Networking & Remote Teleoperation
+* **Localhost-Isolated ROS 2 DDS Loopback:** Enforces `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and `ROS_DOMAIN_ID=0` at system startup. Prevents Wi-Fi Access Points and enterprise routers from dropping inter-node UDP multicast traffic, providing 100% resilient 2.4GHz joystick teleoperation regardless of network connectivity or DHCP state.
 * **Headless Wi-Fi Captive Portal (`Mecanum_Setup`):** If no known Wi-Fi networks are found on boot, the robot creates a local AP Hotspot with a captive portal web UI (`setup_wifi.py`), allowing operators to reconfigure network credentials from their smartphone in the field without any external display or keyboard. The hotspot persists until the connection is fully verified.
 * **Tailscale Mesh VPN & Funnel:** Enables cross-network teleoperation and telemetry dashboard access over public cellular / WAN networks without requiring router port-forwarding or public IP addresses.
 
 ### 🕹️ 5. Kinematics & Actuation Gateway
 * **4-Wheel Mecanum Omnidirectional Drive:** Full holonomic locomotion (forward, strafe, rotate, and diagonal movement) with joystick deadzone filtering.
+* **Deterministic Gamepad Polling:** Configured `joy_node` with continuous 20 Hz autorepeat (`autorepeat_rate: 20.0`, `deadzone: 0.05`, `coalesce_interval_ms: 1`), ensuring zero command starvation between the gamepad driver and the Mecanum kinematics engine.
 * **Decoupled ESP32 Gateway:** High-speed USB-Serial bridge isolating high-current motor PWM drivers and the vacuum relay from the Raspberry Pi host.
 
 ---
@@ -216,35 +220,42 @@ flowchart LR
 ```text
 ros2_ws/
 ├── CHANGELOG.md                   # Full release history and version logs
-├── whep_client_demo.html          # WebRTC WHEP HTML5 video player demo
+├── README.md                      # Comprehensive project documentation
+├── requirements.txt               # Python package dependencies
+├── LICENSE                        # Apache-2.0 License
 ├── docs/
-│   └── images/                    # Project showcase photos & system screenshots
-│       ├── robot_hero.jpg
-│       ├── hardware_dual_board.jpg
-│       ├── fpv_hud_stream.jpg
-│       └── ocr_meter_result.jpg
+│   ├── images/                    # Project showcase photos & system screenshots
+│   │   └── placeholder.txt
+│   └── WebSp.md                   # Web telemetry dashboard client specification
 ├── scripts/
 │   ├── setup_wifi.py              # Flask Wi-Fi Captive Portal UI
 │   ├── startup_network.sh         # Network check & Hotspot boot script
 │   ├── robot-portal.service       # Systemd unit for the captive portal
-│   ├── start_ros2.sh              # ROS 2 Environment loader & stack launcher
+│   ├── start_ros2.sh              # ROS 2 Isolated DDS loader & stack launcher
 │   ├── robot-core.service         # Systemd unit for the core robot stack
 │   └── install_autostart.sh       # Automated autostart installer & aliases setup
+├── tools/
+│   └── UPS_HAT_E/                 # Waveshare UPS Battery testing tools & utilities
+├── legacy/
+│   ├── joy_to_esp32.py            # Early prototype gamepad driver (archived)
+│   ├── kinematics.py              # Standalone kinematics calculation class (archived)
+│   ├── setup_portal.py            # Legacy provisioning portal (archived)
+│   └── websocket_telemetry.py     # Pre-Tailscale WebSocket server (archived)
 ├── src/
 │   └── robot_control/
 │       ├── launch/
-│       │   └── robot_core.launch.py       # Starts all nodes (joy, teleop, audio, telemetry funnel)
+│       │   └── robot_core.launch.py       # Orchestrates all 4 nodes with tuned joy params
 │       ├── media/                         # Audio assets for system feedback (*.wav)
-│       ├── UPS_HAT_E/                     # UPS Battery hardware scripts & utilities
-│       ├── robot_control/                 # Python module source
-│       │   ├── audio_feedback_manager.py  # [MAINTENANCE] Event-based audio playback node
-│       │   ├── camera_firebase_manager.py # WebRTC WHEP FPV Stream, RapidOCR & Firebase RTDB
+│       ├── web/                           # Native WebRTC WHEP player client
+│       │   └── whep_client_demo.html      # FPV Stream HUD demo player
+│       ├── robot_control/                 # Production ROS 2 Python nodes
+│       │   ├── audio_feedback_manager.py  # Event-based audio playback node
+│       │   ├── camera_firebase_manager.py # WebRTC FPV stream, RapidOCR & Firebase RTDB
 │       │   ├── mecanum_joy_teleop.py      # Core teleoperation, E-Stop, Recenter & CLI Dashboard
-│       │   ├── serial_controller.py       # USB-Serial ESP32 communication gateway
-│       │   ├── websocket_telemetry_funnel.py # Tailscale Funnel WS & I2C Battery node
-│       │   └── WebSp.md                   # Web dashboard UI source code
+│       │   ├── serial_controller.py       # Auto-reconnecting USB-Serial ESP32 gateway
+│       │   └── websocket_telemetry_funnel.py # Tailscale Funnel WS & I2C Battery node
 │       ├── package.xml                    # Package dependencies & metadata
-│       └── setup.py                       # Console script entry points
+│       └── setup.py                       # Production console script entry points
 ```
 
 ---
