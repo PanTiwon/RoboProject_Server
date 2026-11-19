@@ -28,10 +28,10 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 
 ### 🌐 End-to-End Web Applications (Tenant & Juristic Admin)
 
-| Tenant Self-Service Portal (`sabaidorm`) | Juristic Admin Dashboard (`REFUSE-01`) |
-| :---: | :---: |
-| <img src="docs/images/tenant_portal.png" width="100%" alt="Tenant Self-Service Portal"> | <img src="docs/images/admin_dashboard.png" width="100%" alt="Juristic Admin Dashboard"> |
-| *Real-time room-based utility lookup (`A101`–`A108`), automated monthly electricity/water billing calculation, and photographic meter verification.* | *Firebase Auth protected management console for room tagging (`ROOM TAG`), OCR manual override (`NEEDS INPUT` / `EDIT` / `DELETE`), dynamic rate configuration, and record verification (`VERIFIED`).* |
+| 1. Tenant Portal (`sabaidorm`) | 2. Admin Auth Gate (`REFUSE-01`) | 3. Juristic Dashboard (`REFUSE-01`) |
+| :---: | :---: | :---: |
+| <img src="docs/images/tenant_portal.png" width="100%" alt="Tenant Self-Service Portal"> | <img src="docs/images/admin_login.png" width="100%" alt="Admin Login Gate"> | <img src="docs/images/admin_dashboard.png" width="100%" alt="Juristic Admin Dashboard"> |
+| *Real-time room-based utility lookup (`A101`–`A108`), automated monthly electricity/water billing calculation, and photographic meter verification.* | *Firebase Auth protected security gate (Email/Password) preventing unauthorized console access and enforcing UID whitelist rules.* | *Management console for staff: room tagging (`ROOM TAG`), OCR manual overrides (`NEEDS INPUT` / `EDIT` / `DELETE`), dynamic rates, and verification (`VERIFIED`).* |
 
 ---
 
@@ -257,6 +257,7 @@ ros2_ws/
 │   │   ├── hardware_dual_board.jpg# Raspberry Pi 5 + ESP32 dual compute architecture
 │   │   ├── ocr_meter_result.jpg   # RapidOCR & HSV blue-box isolation result
 │   │   ├── tenant_portal.png      # SabaiDorm tenant utility self-service portal
+│   │   ├── admin_login.png        # REFUSE-01 admin authentication login gate
 │   │   └── admin_dashboard.png    # REFUSE-01 juristic management console
 │   └── WebSp.md                   # Web telemetry dashboard client specification
 ├── scripts/
