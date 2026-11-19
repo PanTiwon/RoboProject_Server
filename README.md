@@ -84,26 +84,26 @@ The system follows a distributed compute model, decoupling high-level compute an
 ```text
 +-------------------------------------------------------------------------------------------------------------------------------+
 |                                                USERS, OPERATORS & TENANTS                                                     |
-|  [ Gamepad ]        [ Telemetry Dashboard ]           [ Tenant Portal (sabaidorm) ]       [ Juristic Admin Dashboard ]        |
-+------+-------------------------+------------------------------------+-----------------------------------+---------------------+
-       |                         ^                                    ^                                   ^
-       | (2.4GHz / USB)          | (WebSocket / HTTPS)                | (Public Read: 'verified' only)    | (Auth Read / Write)
-       V                         |                                    |                                   |
-+--------------------------------+----------------------------+       |                                   |
-|             RASPBERRY PI (ROS 2 Compute Brain)              |       |                                   |
-|                                                             |       |                                   |
-|  [/joy] -> [ mecanum_joy_teleop ] -> [/wheel_speeds]        |       |                                   |
-|                  |                         |                |       |                                   |
-|                  | (kinematics)            v                |       |                                   |
-|                  |                 [ serial_controller ]    |       |                                   |
-|                  v                         |                |       |                                   |
-|       [ camera_firebase_manager ]          | (USB Serial)   |       |                                   |
-|                  |                         v                |       |                                   |
-|                  | (HTTPS REST)     +--------------------+  |       |                                   |
-|                  v                  |       ESP32        |  |       |                                   |
-|      +------------------------+     | (M1-M4 PWM/Vacuum) |  |       |                                   |
-|      |     Firebase RTDB      |-----+--------------------+--+       |                                   |
-|      |  (roboproject1-a9c63)  |-------------------------------------+-----------------------------------+
+|       [ Gamepad ]           [ REFUSE-01 Web Console (Telemetry + Juristic Admin) ]            [ Tenant Portal (sabaidorm) ]   |
++------------+-----------------------------------+------------------------------------+-----------------------+-----------------+
+             |                                   ^                                    ^                       ^
+             | (2.4GHz / USB)                    | (WebSocket / HTTPS)                | (Auth Read / Write)   | (Public Read: 'verified' only)
+             V                                   |                                    |                       |
++------------------------------------------------+------------+                       |                       |
+|                   RASPBERRY PI (ROS 2 Compute Brain)        |                       |                       |
+|                                                             |                       |                       |
+|  [/joy] -> [ mecanum_joy_teleop ] -> [/wheel_speeds]        |                       |                       |
+|                  |                         |                |                       |                       |
+|                  | (kinematics)            v                |                       |                       |
+|                  |                 [ serial_controller ]    |                       |                       |
+|                  v                         |                |                       |                       |
+|       [ camera_firebase_manager ]          | (USB Serial)   |                       |                       |
+|                  |                         v                |                       |                       |
+|                  | (HTTPS REST)     +--------------------+  |                       |                       |
+|                  v                  |       ESP32        |  |                       |                       |
+|      +------------------------+     | (M1-M4 PWM/Vacuum) |  |                       |                       |
+|      |     Firebase RTDB      |-----+--------------------+--+                       |                       |
+|      |  (roboproject1-a9c63)  |-----------------------------------------------------+-----------------------+
 |      +------------------------+
 ```
 
@@ -125,18 +125,17 @@ flowchart LR
         TelemetryNode["websocket_telemetry_funnel\n(Web Server & I2C Battery)"]
     end
 
-    subgraph Outputs ["Hardware & Robot UI"]
+    subgraph Outputs ["Hardware & Robot Outputs"]
         ESP32["ESP32 Driver\n(M1-M4 PWM + Vacuum)"]
         AudioOut["aplay\n(Local Audio Jack)"]
         FPVOut["FPV WebRTC Stream\n(Port 8889 / 5000)"]
-        Dashboard["Telemetry Dashboard\n(Browser / Funnel)"]
         UPS["UPS HAT\n(I2C 0x2d)"]
     end
 
-    subgraph Cloud ["Cloud & Downstream Portals"]
+    subgraph Cloud ["Cloud & Web Applications"]
         FirebaseRTDB[("Firebase RTDB\n(roboproject1-a9c63)")]
-        TenantPortal["Tenant Portal (sabaidorm)\n[Public Read: 'verified' records only]"]
-        AdminDashboard["Juristic Admin Dashboard (REFUSE-01)\n[Authenticated R/W via Firebase Auth + /admins Rules]"]
+        RefuseConsole["REFUSE-01 Web Console (Telemetry + Juristic Admin)\n(https://refuserobot.netlify.app/)"]
+        TenantPortal["Tenant Portal (sabaidorm)\n(https://sabaidorm.netlify.app/)\n[Public Read: 'verified' records only]"]
     end
 
     JoyNode -->|/joy| Teleop
@@ -152,10 +151,10 @@ flowchart LR
     AudioNode --> AudioOut
     CameraNode -->|WHEP / HTTP| FPVOut
     CameraNode -->|REST Split Uploads| FirebaseRTDB
-    TelemetryNode --> Dashboard
+    TelemetryNode -->|WSS / Funnel| RefuseConsole
 
+    FirebaseRTDB <-->|Firebase Auth & /admins UID Whitelist| RefuseConsole
     FirebaseRTDB -->|Query: status == 'verified'| TenantPortal
-    FirebaseRTDB <-->|Firebase Auth & /admins UID Whitelist| AdminDashboard
 ```
 
 ---
@@ -361,27 +360,23 @@ ros2 launch robot_control robot_core.launch.py
 
 ### 🌐 3. Accessing the Dashboard & Camera
 
-Once the system is running, you can monitor the robot remotely:
+Once the system is running, you can monitor and manage the robot remotely:
 
-**1. Telemetry Web Dashboard (Hosted on Netlify)**
-* Access the main control interface here: **[🔗 Refuse Robot - Netlify](https://refuserobot.netlify.app/)**
-* **Local Network:** Dashboard WebSocket connects to `ws://<RASPBERRY_PI_IP>:8080`
-* **Public Internet (Tailscale Funnel):** Dashboard connects securely via `wss://core.tailb47df1.ts.net:443` (Maps to 8080 locally).
+**1. Unified Robot Telemetry & Juristic Admin Console (`REFUSE-01`)**
+* Access the unified web console here: **[🔗 REFUSE-01 Console (Netlify)](https://refuserobot.netlify.app/)**
+* **Live Telemetry (WebSocket / Tailscale Funnel):** Connects to `ws://<RASPBERRY_PI_IP>:8080` locally or securely via `wss://core.tailb47df1.ts.net:443` over the public internet to display real-time wheel speeds, motor PWM, battery levels, and system modes.
+* **Juristic Meter Management (Firebase Auth):** Protected management console allowing authenticated staff (validated against the `/admins` UID whitelist in Firebase RTDB `roboproject1-a9c63`) to tag rooms (`ROOM TAG`), perform manual OCR overrides (`NEEDS INPUT` / `EDIT` / `DELETE`), configure billing rates (THB/unit), and approve meter readings (`VERIFIED`).
 
 **2. FPV Camera Live Stream**
 * The stream defaults to **OFF** to save bandwidth and battery. 
-* Press the **Start** button on your gamepad to toggle the stream **ON**.
+* Press the **Start** button on your gamepad to toggle the stream **ON**, or access the web endpoint to trigger streaming automatically.
 * The stream features an advanced **OpenCV HUD Overlay** (Parking Guidelines, Crosshair, and Real-time Servo Angles).
 * **Local Network:** `http://<RASPBERRY_PI_IP>:5000` (or Port `8889` for MediaMTX WHEP)
 * **Public Internet (Tailscale Funnel):** `https://core.tailb47df1.ts.net:8443` (Maps to 5000 locally).
 
 **3. Tenant Self-Service Portal (`sabaidorm`)**
-* Access the tenant utility portal: **[🔗 SabaiDorm Tenant Portal](https://<TENANT_PORTAL_URL>.netlify.app/)**
+* Access the tenant utility portal: **[🔗 SabaiDorm Tenant Portal](https://sabaidorm.netlify.app/)**
 * **Public Access:** Allows residents to look up rooms (`A101`–`A108`), view monthly electricity/water billing calculations, and inspect photographic meter evidence. Strictly queries records approved with `status: "verified"`.
-
-**4. Juristic Admin Management Console (`REFUSE-01`)**
-* Access the staff management console: **[🔗 REFUSE-01 Juristic Admin](https://<ADMIN_DASHBOARD_URL>.netlify.app/)**
-* **Role-Based Security:** Gated behind **Firebase Authentication (Email/Password)**. Requires user UID whitelisting in the `/admins` node of Firebase RTDB (`roboproject1-a9c63`) to perform room tagging (`ROOM TAG`), OCR manual overrides (`NEEDS INPUT` / `EDIT` / `DELETE`), rate configuration, and record approvals (`VERIFIED`).
 
 ---
 
