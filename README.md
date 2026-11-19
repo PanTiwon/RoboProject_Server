@@ -174,16 +174,16 @@ flowchart LR
 
 ---
 
-## 🧠 4. Core Software Nodes & Features (v1.1.2 'Escape Velocity')
+## 🧠 4. Core Software Nodes & Features (v1.1.3 'Escape Velocity')
 
 | Node / File | Primary Responsibility |
 |---|---|
-| **`mecanum_joy_teleop.py`** | Central command node. Ingests raw `/joy` inputs, performs deadzone filtering, executes 4-wheel **Inverse Kinematics**, manages PTZ Camera angles, displays a CLI dashboard, and publishes `/wheel_speeds`. Includes **Emergency Brake (E-Stop Toggle)**, **Camera Recenter with Offset (L3)**, **Gamepad Auto-Detection** (Xbox 360 vs PS4), and **Graceful Hardware Shutdown** (`L1 + R1` 5s hold). |
+| **`mecanum_joy_teleop.py`** | Central command node. Ingests raw `/joy` inputs, performs deadzone filtering, executes 4-wheel **Inverse Kinematics**, manages PTZ Camera angles, displays a CLI dashboard, and publishes `/wheel_speeds`. Includes **Deterministic Gamepad Polling (20Hz)**, **Emergency Brake (E-Stop Toggle)**, **Camera Recenter with Offset (L3)**, **Gamepad Auto-Detection** (Xbox 360 vs PS4), and **Graceful Hardware Shutdown** (`L1 + R1` 5s hold). |
 | **`serial_controller.py`** | High-speed, robust serial gateway to ESP32. Formats wheel commands into delimited ASCII packets (`<M1,M2,M3,M4,Vacuum,Yaw,Pitch>`) with auto-reconnection and port auto-detection (`/dev/ttyACM*`, `/dev/ttyUSB*`). |
-| **`camera_firebase_manager.py`** | Native Python camera state manager. Provides **WebRTC Live FPV Streaming (MediaMTX WHEP on Port 8889)**, **Dual Capture Mode** (`STREAM_GRAB` & `HARDWARE_STILL`), **Deep Learning RapidOCR (ONNX)** with **HSV Multi-Meter Segmentation**, and **Lean Firebase RTDB Split Uploads**. Enforces FIFO quota (max 50 images) and offline auto-sync. |
+| **`camera_firebase_manager.py`** | Native Python camera state manager. Provides **WebRTC Live FPV Streaming (MediaMTX WHEP on Port 8889)** with **Web-Triggered Auto-Activation** and REST control APIs (`/api/stream/*`), **Dual Capture Mode** (`STREAM_GRAB` & `HARDWARE_STILL` with 3.5s timeout safety), **Deep Learning RapidOCR (ONNX)** with **HSV Multi-Meter Segmentation**, and **Lean Firebase RTDB Split Uploads**. Enforces FIFO quota (max 50 images) and offline auto-sync. |
 | **`websocket_telemetry_funnel.py`** | Real-time monitoring server **and hardware monitor**. Broadcasts system status, motor speeds, and reads **UPS HAT battery via I2C (`smbus`)**. It feeds data to the Web UI via WebSockets (Tailscale Funnel) and publishes `/battery_percent` back to the CLI dashboard. |
-| **`audio_feedback_manager.py`** | **[CURRENTLY UNDER MAINTENANCE]** Headless status notifier. Uses `aplay` to play auditory cues for state transitions. |
-| **`robot_core.launch.py`** | Automated orchestration. Brings up all core nodes, parameter configurations, and serial connections in a single command. |
+| **`audio_feedback_manager.py`** | Headless status notifier. Uses `aplay` with audio assets in `src/robot_control/media/` to play auditory cues for state transitions. |
+| **`robot_core.launch.py`** | Automated orchestration. Brings up all core nodes, parameter configurations (`joy_node` autorepeat 20Hz), and serial connections in a single command. |
 | **`setup_wifi.py` & `startup_network.sh`** | **Headless Wi-Fi Captive Portal**. Spawns an AP Hotspot and mobile-friendly Flask web UI to easily switch Wi-Fi networks in the field without monitor/keyboard. |
 
 ---
@@ -197,17 +197,24 @@ flowchart LR
 3. **Decoupled ESP32 Serial Actuation:**
    * Linux on a Raspberry Pi is a Non-Real-Time OS. Offloading PWM signal generation and Relay triggering to the ESP32 ensures zero jitter on high-power motor drivers, maintaining smooth locomotion.
 4. **On-Demand Camera Resource Management:**
-   * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle, it temporarily spawns an active stream. When a high-res photo is requested in `HARDWARE_STILL` mode, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
+   * FPV streaming drains bandwidth and battery. The camera system defaults to OFF. Using a gamepad toggle or web dashboard navigation, it spawns an active stream. When a high-res photo is requested in `HARDWARE_STILL` mode, the stream gracefully yields the hardware lock to `rpicam-still`, pushes to Firebase RTDB via Base64 string, and automatically resumes.
 5. **Headless Wi-Fi Setup for Field Deployment (Dynamic Configuration):**
    * Field testing often involves unknown network environments where SSH or external monitors are unavailable. The `startup_network.sh` boot script uses `nmcli` to ping for internet access on boot. If it fails, it instantly broadcasts an AP Hotspot (`Mecanum_Setup`). Operators can connect via their smartphones to access the `setup_wifi.py` Flask portal, allowing them to enter new Wi-Fi credentials on the fly. This guarantees immediate, seamless network switching when migrating the robot between locations.
 6. **Graceful Hardware Shutdown & Safety Interlock:**
    * Abruptly cutting DC power via a physical toggle switch risks corrupted file systems on the Raspberry Pi's SD card / NVMe storage. To prevent data corruption in the field, we introduced a gamepad-driven shutdown sequence: holding **L1 + R1 (Left & Right Bumpers) for 5 continuous seconds** while the robot is **completely stationary** (Safety Interlock: all wheel velocities and directional inputs $v_x, v_y, \omega_z$ must remain 0). Releasing the buttons or moving the robot immediately cancels the timer. Upon countdown completion, the node issues an I2C command to the Waveshare UPS HAT (`0x2d`) requesting a delayed 5V power cut-off in 30 seconds (`sudo i2cset -y 1 0x2d 0x01 0x55`), immediately followed by an OS-level graceful powerdown (`sudo poweroff`), allowing all file buffers to sync before power is removed.
 7. **Local Storage FIFO Quota & Offline Resilient Cloud Sync:**
    * Field robotics frequently face intermittent Wi-Fi or cellular connections. Continuously capturing high-resolution photos without a storage boundary risks filling the Raspberry Pi's SD card / NVMe SSD, which can lead to filesystem corruption or OS failure. To solve this, `camera_firebase_manager` enforces a hard ceiling of 50 images (`self.max_images = 50`), automatically deleting the oldest image files via FIFO `os.path.getmtime` sorting. Additionally, if an upload fails due to network outage, the payload is persisted to `pending_uploads.json` and automatically flushed to Firebase RTDB by a background daemon as soon as internet connectivity returns.
+8. **Isolated DDS Localhost Loopback (Fixing Wi-Fi Joystick Drops):**
+   * Standard ROS 2 FastDDS broadcasts inter-node traffic across all active network interfaces via UDP multicast. When connected to Wi-Fi, routers and access points with IGMP snooping frequently dropped `/joy` packets, resulting in sudden teleoperation freezes. By enforcing `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and `ROS_DOMAIN_ID=0` in `start_ros2.sh`, inter-node messaging is locked to the loopback interface (`127.0.0.1`), ensuring 100% immune, zero-latency joystick control regardless of Wi-Fi association or DHCP IP changes.
+9. **Web-Triggered FPV Auto-Activation & Subprocess Safety:**
+   * Operators accessing the robot remotely via browser or Tailscale previously required a gamepad to start video streaming. In v1.1.3, opening the web dashboard at `http://<pi_ip>:5000/` automatically initiates the MediaMTX stream. Additionally, high-res captures are guarded by a 3.5s execution timeout with automatic cleanup (`pkill -9 -f rpicam-still`), preventing camera hardware deadlocks.
 
 ---
 
 ## 🚀 6. Future Roadmap
+* **[COMPLETED in v1.1.3] Isolated DDS Localhost Loopback & Deterministic Gamepad Polling:** 100% drop-free teleoperation on Wi-Fi networks and 20Hz joy publishing.
+* **[COMPLETED in v1.1.3] Web-Triggered FPV Auto-Activation & REST APIs:** Automatic video stream activation on dashboard connection with remote REST controls.
+* **[COMPLETED in v1.1.3] Subprocess Execution Timeout & Repository Clean Architecture:** 3.5s camera hardware safety ceiling and modular directory tree (`web/`, `legacy/`, `tools/`, `docs/`).
 * **[COMPLETED in v1.1.2] Vision & Object Detection (OCR):** Integrated RapidOCR ONNX Runtime with HSV multi-meter segmentation and Firebase RTDB split uploads.
 * **[COMPLETED in v1.1.2] WebRTC Streaming:** Migrated from MJPEG to MediaMTX WHEP for sub-second FPV latency.
 * **Full Autonomous Mode (v2.0 Milestone):** Developing the logic to transition from human-controlled `/joy` input to AI-driven navigation based on detected waste and visual markers.
@@ -350,6 +357,7 @@ Detailed release notes, version milestones, and technical bug fixes are document
 
 | Version | Release Date | Key Milestones |
 |---|---|---|
+| **[1.1.3](CHANGELOG.md#113---2026-11-19)** | 2026-11-19 | Isolated DDS Localhost Loopback, Web-Triggered FPV Auto-Activation & REST API, Subprocess Timeout, Clean Architecture |
 | **[1.1.2](CHANGELOG.md#112---2026-10-16)** | 2026-10-16 | MediaMTX WebRTC (WHEP), RapidOCR Multi-Meter Detection, Lean RTDB Payload, E-Stop & Camera Recenter |
 | **[1.1.1](CHANGELOG.md#111---2026-10-14)** | 2026-10-14 | RapidOCR ONNX ARM64 migration, Serial Auto-Discovery, Persistent Counter & Bugfixes |
 | **[1.1.0](CHANGELOG.md#110---2026-10-12)** | 2026-10-12 | Systemd Autostart, Graceful Hardware Shutdown, Captive Portal Wi-Fi, Tailscale Funnel |
