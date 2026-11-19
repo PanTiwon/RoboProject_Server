@@ -23,7 +23,7 @@ A modular, distributed robotics software stack for a 4-wheel Mecanum utility and
 
 | Dual-Board Compute & Actuation | Real-Time FPV HUD Stream (WebRTC) | RapidOCR & HSV Meter Segmentation |
 | :---: | :---: | :---: |
-| <img src="docs/images/hardware_dual_board.jpg" width="100%" alt="Hardware Setup"> | <img src="docs/images/fpv_hud_stream.jpg" width="100%" alt="FPV HUD Stream"> | <img src="docs/images/ocr_meter_result.jpg" width="100%" alt="RapidOCR Result"> |
+| <img src="docs/images/hardware_dual_board.jpg" width="100%" alt="Hardware Setup"> | <img src="docs/images/fpv_hud_stream.png" width="100%" alt="FPV HUD Stream"> | <img src="docs/images/ocr_meter_result.jpg" width="100%" alt="RapidOCR Result"> |
 | *Raspberry Pi 5 + ESP32 + Waveshare UPS HAT with isolated power supply* | *Sub-second WHEP streaming with OpenCV parking guidelines & crosshair* | *Automated HSV blue-box isolation & ONNX 4-digit meter recognition* |
 
 ---
